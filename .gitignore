@@ -91,3 +91,31 @@ target/
 
 # MLflow
 .mlflow-venv/
+
+# --- Airflow ---
+logs/
+plugins/
+airflow.cfg
+airflow-webserver.pid
+.env.airflow
+
+# --- Virtual environments ---
+.venv/
+venv/
+
+# --- Modèle entraîné et rapports (générés, pas du code) ---
+/models/
+/reports/
+
+# --- MLflow (artefacts locaux, pas le backend Postgres) ---
+/mlruns/
+
+# --- Miniconda installer (traîne à la racine) ---
+Miniconda3-latest-Linux-x86_64.sh*
+
+# --- Sauvegardes de base de données ---
+*.sql
+mlops_backup_*.sql
+
+# --- Fichiers temporaires de test ---
+input.json
