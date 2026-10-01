@@ -1,0 +1,24 @@
+name: rakuten-baseline
+
+docker_env:
+  image: jul26_bmlops_int_rakuten-api:latest
+  environment: [
+    ["POSTGRES_USER", "romealnnr"],
+    ["POSTGRES_PASSWORD", "test123"],
+    ["POSTGRES_DB", "mlops"],
+    ["POSTGRES_HOST", "db"],
+    ["POSTGRES_PORT", "5432"],
+    ["MLFLOW_TRACKING_URI", "postgresql+psycopg://romealnnr:test123@db:5432/mlops"],
+    "MLFLOW_EXPERIMENT_NAME", "MLFLOW_REGISTERED_MODEL_NAME",
+    "MODEL_NAME", "TARGET_COLUMN", "TEST_SIZE", "RANDOM_STATE",
+    "API_HOST", "API_PORT", "LOG_LEVEL"
+  ]
+  volumes: ["./mlruns:/app/mlruns"]
+
+entry_points:
+  train:
+    parameters:
+      test_size: {type: float, default: 0.2}
+      random_state: {type: int, default: 42}
+      limit: {type: int, default: 0}
+    command: "python -m src.models.training --test-size {test_size} --random-state {random_state} --limit {limit}"

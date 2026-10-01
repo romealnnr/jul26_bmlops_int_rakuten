@@ -1,0 +1,179 @@
+"""Inférence à partir du modèle entraîné.
+
+Usage :
+    python -m src.models.predict --sample
+    python -m src.models.predict --input payload.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+from pathlib import Path
+from typing import Any
+
+import joblib
+import mlflow
+import pandas as pd
+from src.config import settings, setup_logging
+from src.data.db import Prediction, get_session
+from src.features.build_features import load_dataframe, prepare_frame
+
+logger = logging.getLogger(__name__)
+
+_ARTIFACT: dict[str, Any] | None = None
+
+FLAG_THRESHOLD = 0.6  # en dessous de ce score de confiance, la prédiction est flaggée
+
+
+class ModelNotFoundError(RuntimeError):
+    """Aucun modèle entraîné n'est disponible."""
+
+
+def load_artifact(force_reload: bool = False) -> dict[str, Any]:
+    """Charge l'artefact depuis le disque, avec cache mémoire."""
+    global _ARTIFACT
+
+    if _ARTIFACT is not None and not force_reload:
+        return _ARTIFACT
+
+    if not settings.model_path.exists():
+        raise ModelNotFoundError(
+            f"Modèle introuvable ({settings.model_path}). "
+            "Lancez d'abord : python -m src.models.training"
+        )
+
+    _ARTIFACT = joblib.load(settings.model_path)
+    logger.info("Modèle chargé (version %s)", _ARTIFACT["version"])
+    return _ARTIFACT
+
+
+def model_info() -> dict[str, Any]:
+    """Métadonnées du modèle courant, sans les objets sklearn."""
+    artifact = load_artifact()
+    return {
+        "model_name": artifact["model_name"],
+        "version": artifact["version"],
+        "trained_at": artifact["trained_at"],
+        "n_features": len(artifact["feature_names"]),
+        "metrics": artifact["metrics"],
+    }
+
+
+def _log_batch_to_mlflow(results: list[dict[str, Any]]) -> None:
+    """Journalise un résumé du batch de prédictions dans MLflow (monitoring)."""
+    n_total = len(results)
+    n_flagged = sum(1 for r in results if r["flagged"])
+    flag_rate = (n_flagged / n_total) if n_total else 0.0
+
+    try:
+        mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+        mlflow.set_experiment(settings.mlflow_experiment_name)
+
+        with mlflow.start_run(run_name="prediction_batch"):
+            mlflow.set_tags(
+                {
+                    "run_type": "prediction_batch",
+                    "has_flagged_predictions": "true" if n_flagged > 0 else "false",
+                    "model_version": results[0]["model_version"] if results else "unknown",
+                }
+            )
+            mlflow.log_metrics(
+                {
+                    "n_predictions": n_total,
+                    "n_flagged": n_flagged,
+                    "flag_rate": flag_rate,
+                }
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Journalisation MLflow du batch impossible : %s", exc)
+
+
+def predict(records: list[dict], log_to_db: bool = True, log_to_mlflow: bool = True) -> list[dict[str, Any]]:
+    """Prédit pour une liste d'observations et journalise le résultat."""
+    if not records:
+        raise ValueError("Aucune observation fournie")
+
+    artifact = load_artifact()
+    pipeline = artifact["pipeline"]
+    feature_names: list[str] = artifact["feature_names"]
+
+    X = prepare_frame(records, feature_names)
+    labels = pipeline.predict(X)
+    probabilities_matrix = pipeline.predict_proba(X)
+
+    results = []
+    for label, proba_row in zip(labels, probabilities_matrix, strict=True):
+        probability = round(float(max(proba_row)), 6)
+        flagged = probability < FLAG_THRESHOLD
+        results.append(
+            {
+                "prediction": int(label),
+                "probability": probability,
+                "model_version": artifact["version"],
+                "flagged": flagged,
+                "flag_reason": "low_confidence" if flagged else None,
+            }
+        )
+
+    n_flagged = sum(1 for r in results if r["flagged"])
+    if n_flagged:
+        logger.info("%d/%d prédiction(s) flaggée(s) (confiance < %.2f)", n_flagged, len(results), FLAG_THRESHOLD)
+
+    if log_to_db:
+        try:
+            with get_session() as session:
+                session.add_all(
+                    [
+                        Prediction(
+                            model_version=artifact["version"],
+                            features=record,
+                            prediction=result["prediction"],
+                            probability=result["probability"],
+                            flagged=result["flagged"],
+                            flag_reason=result["flag_reason"],
+                        )
+                        for record, result in zip(records, results, strict=True)
+                    ]
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Journalisation des prédictions impossible : %s", exc)
+
+    if log_to_mlflow:
+        _log_batch_to_mlflow(results)
+
+    return results
+
+def sample_record() -> dict[str, Any]:
+    """Construit une observation d'exemple à partir de la première ligne en base."""
+    artifact = load_artifact()
+    df = load_dataframe(limit=1)
+    row = df[artifact["feature_names"]].iloc[0]
+    # Pas de cast global en float : designation/description/image_path sont du texte.
+    return row.where(pd.notna(row), None).to_dict()
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Inférence du modèle baseline")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--input", type=Path, help="Fichier JSON (objet ou liste d'objets)")
+    group.add_argument("--sample", action="store_true", help="Utilise une ligne de la base")
+    parser.add_argument("--no-log", action="store_true", help="Ne journalise pas en base")
+    parser.add_argument("--no-mlflow", action="store_true", help="Ne journalise pas dans MLflow")
+    args = parser.parse_args()
+
+    setup_logging()
+
+    if args.sample:
+        records = [sample_record()]
+    else:
+        payload = json.loads(args.input.read_text(encoding="utf-8"))
+        records = payload if isinstance(payload, list) else [payload]
+
+    results = predict(records, log_to_db=not args.no_log, log_to_mlflow=not args.no_mlflow)
+    print(json.dumps(results, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
