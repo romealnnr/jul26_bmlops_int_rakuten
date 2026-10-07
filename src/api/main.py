@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, status
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -15,6 +16,7 @@ from src.data.db import init_db, ping
 from src.models import predict as predict_module
 from src.models.predict import ModelNotFoundError
 from src.models.training import train
+from src.monitoring.drift import compute_drift
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,8 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 
 # --------------------------------------------------------------------------- schémas
@@ -150,3 +154,30 @@ def model_metadata() -> dict[str, Any]:
         return predict_module.model_info()
     except ModelNotFoundError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@app.post("/drift/compute", tags=["monitoring"])
+async def run_drift_computation() -> dict[str, Any]:
+    """Calcule le data drift entre la baseline et le dernier batch traité,
+    et persiste les métriques en base pour Grafana."""
+    from src.data.db import get_session
+    from src.models.training import _get_cursor
+
+    with get_session() as session:
+        current_max_id = _get_cursor(session)
+
+    if current_max_id == 0:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail="Aucun entraînement continu n'a encore tourné (curseur à 0).",
+        )
+
+    try:
+        result = await run_in_threadpool(compute_drift, current_max_id)
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Échec du calcul de drift")
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+    return result

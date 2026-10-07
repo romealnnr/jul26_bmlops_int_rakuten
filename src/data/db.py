@@ -88,6 +88,24 @@ class PipelineCursor(Base):
         return f"<PipelineCursor {self.pipeline_name}={self.last_processed_id}>"
 
 
+class DriftMetric(Base):
+    """Résultat d'un calcul de drift (Evidently) entre une baseline et un batch."""
+
+    __tablename__ = "drift_metrics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    reference_desc: Mapped[str] = mapped_column(String(200), nullable=False)
+    current_desc: Mapped[str] = mapped_column(String(200), nullable=False)
+    column_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    method: Mapped[str] = mapped_column(String(100), nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<DriftMetric {self.column_name}={self.score}>"
+
+
 def init_db() -> None:
     """Crée les tables manquantes (idempotent)."""
     Base.metadata.create_all(bind=engine)

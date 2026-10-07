@@ -1,0 +1,40 @@
+{
+  "title": "Data Drift — Rakuten",
+  "uid": "rakuten-data-drift",
+  "tags": ["rakuten", "drift"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "",
+  "time": {"from": "now-30d", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Score de drift par colonne dans le temps",
+      "type": "timeseries",
+      "datasource": {"type": "postgres", "uid": "postgres_ds"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
+      "targets": [
+        {
+          "rawSql": "SELECT run_at AS time, column_name, score FROM drift_metrics ORDER BY run_at",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Dernières métriques de drift (détail)",
+      "type": "table",
+      "datasource": {"type": "postgres", "uid": "postgres_ds"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 10},
+      "targets": [
+        {
+          "rawSql": "SELECT run_at, column_name, method, score, threshold, (score > threshold) AS drift_depasse FROM drift_metrics ORDER BY run_at DESC LIMIT 50",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}
