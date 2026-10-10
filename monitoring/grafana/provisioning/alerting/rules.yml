@@ -1,0 +1,191 @@
+# Alert rules, provisioned as a file.
+#
+# The dashboards in this repository are already provisioned rather than
+# clicked together in the UI; alerts belong in the same place and for the
+# same reasons. Rules created by hand live in one person's Grafana, survive
+# no rebuild, and nobody can review them in a diff.
+#
+# Each rule follows Grafana's three-step shape:
+#   A  query the datasource
+#   B  reduce the series to one number
+#   C  compare that number against a threshold
+# `condition: C` names the step that decides.
+#
+# `for:` is not decoration. It is the difference between an alert and a
+# nuisance: a single bad scrape should never page anyone, and every rule
+# here has to stay wrong for a while before it says so.
+#
+# No contact points are defined. These rules surface in Grafana's alert
+# list and on the dashboards; wiring them to email or a webhook is a
+# separate decision, and one that should be made deliberately - an alert
+# that triggers an action is no longer just an observation.
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: rakuten-model
+    folder: Rakuten
+    interval: 1m
+    rules:
+
+      # ------------------------------------------------------------------
+      - uid: rakuten-model-not-loaded
+        title: API is serving without a model
+        condition: C
+        for: 2m
+        annotations:
+          summary: >-
+            The API is up but has no model loaded, so every call to /predict
+            returns 409. Check that the artifact exists and that the last
+            training run finished.
+        labels:
+          severity: critical
+        noDataState: NoData
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus_ds
+            model:
+              refId: A
+              expr: rakuten_model_loaded
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              reducer: last
+              expression: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: lt, params: [1]}
+
+      # ------------------------------------------------------------------
+      - uid: rakuten-drift-above-threshold
+        title: Data drift above threshold
+        condition: C
+        for: 10m
+        annotations:
+          summary: >-
+            More than half of the monitored columns are above their drift
+            threshold. The data reaching the model no longer looks like the
+            data it was trained on; consider retraining.
+        labels:
+          severity: warning
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: prometheus_ds
+            model:
+              refId: A
+              expr: rakuten_drift_share_of_drifted_columns
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              reducer: last
+              expression: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: gt, params: [0.5]}
+
+      # ------------------------------------------------------------------
+      # The one that watches the watcher.
+      #
+      # If the drift job stops producing reports, the drift panel keeps
+      # showing its last values and looks perfectly healthy. Nothing else in
+      # this stack would notice. Silence is the most dangerous state a
+      # monitoring system can be in, because it is indistinguishable from
+      # good news.
+      #
+      # A never-run monitor reports -1, not a large age, so a fresh install
+      # does not fire this on its first day.
+      - uid: rakuten-drift-monitor-stale
+        title: Drift monitor has stopped reporting
+        condition: C
+        for: 15m
+        annotations:
+          summary: >-
+            No drift report has been produced for over 24 hours. The drift
+            dashboard is showing stale data while appearing normal. Check the
+            Airflow DAG and the /drift/compute endpoint.
+        labels:
+          severity: critical
+        noDataState: NoData
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: prometheus_ds
+            model:
+              refId: A
+              expr: rakuten_drift_report_age_seconds
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              reducer: last
+              expression: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: gt, params: [86400]}
+
+      # ------------------------------------------------------------------
+      - uid: rakuten-training-failures
+        title: Training runs are failing
+        condition: C
+        for: 5m
+        annotations:
+          summary: >-
+            At least one training run has failed in the last hour. The model
+            in production is not being refreshed; check the API logs.
+        labels:
+          severity: warning
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: prometheus_ds
+            model:
+              refId: A
+              expr: increase(rakuten_training_runs_total{outcome="failed"}[1h])
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              reducer: last
+              expression: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: gt, params: [0]}

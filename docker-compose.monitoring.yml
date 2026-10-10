@@ -1,0 +1,59 @@
+# Monitoring overlay - a proposal, not a replacement.
+#
+# This file changes nothing in docker-compose.yml. It is applied on top of it:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+#
+# Compose merges the two. Mappings are merged key by key, so each service
+# below keeps everything it already has and gains only what is written here.
+# Lists are the exception: `command` and `volumes` are replaced wholesale
+# rather than appended to, which is why `command` below repeats the two flags
+# the image sets by default - omitting them would silently unconfigure
+# Prometheus.
+#
+# Written as an overlay on purpose. Everything here is a claim about how the
+# monitoring stack should behave, and a claim is worth more when the other
+# person can run it and then throw it away without a revert.
+
+services:
+
+  # --------------------------------------------------------------------------
+  # Grafana: let the provisioned datasource resolve its own credentials.
+  # --------------------------------------------------------------------------
+  #
+  # datasources.yml reads `$POSTGRES_PASSWORD` and works. It would read
+  # `$POSTGRES_USER` and `$POSTGRES_DB` too - but Grafana expands those
+  # variables from THIS container's environment, not from .env and not from
+  # the db service, and only the password is passed in today.
+  #
+  # Both halves have to land together. The datasource change alone expands to
+  # an empty username, and the failure is silent in the worst way: Grafana
+  # starts, both datasources appear, and the SQL panels simply return nothing.
+  # An empty drift panel and a "no drift detected" drift panel are
+  # indistinguishable on screen.
+  grafana:
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+
+  # --------------------------------------------------------------------------
+  # Prometheus: keep enough history to see a trend, and reload without a restart.
+  # --------------------------------------------------------------------------
+  prometheus:
+    command:
+      # The two the image would have set for us. Repeated because overriding
+      # `command` replaces the default entirely.
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # The default is 15 days. Drift and model decay are slow phenomena, and
+      # a window shorter than the thing you are measuring cannot show it:
+      # comparing this week's prediction distribution against last month's is
+      # the whole point of storing it. 30 days of this stack's handful of
+      # series costs a few tens of MB.
+      - --storage.tsdb.retention.time=30d
+      # Allows `curl -X POST http://localhost:9090/-/reload` to pick up a
+      # changed prometheus.yml. Without it, every edit to a scrape target
+      # means restarting the container - which discards the in-memory head
+      # block, so you lose the most recent data in the act of reconfiguring
+      # the thing that collects it.
+      - --web.enable-lifecycle
