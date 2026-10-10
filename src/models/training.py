@@ -242,6 +242,7 @@ def train(
             "target_column": settings.target_column,
             "data_source": "postgresql:raw_samples",
             "data_fingerprint": _dataset_fingerprint(),
+            "git_commit": os.getenv("GIT_COMMIT", "unknown"),
             "version": version,
         })
         mlflow.log_metrics({
