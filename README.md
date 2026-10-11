@@ -60,10 +60,10 @@ partir du texte (`designation`, `description`) et de l'image du produit.
 Baseline **multimodal** : TF-IDF (texte) + embeddings ResNet18 gelé (image),
 fusionnés dans un pipeline scikit-learn, classifieur Régression Logistique.
 
-## 1. Prérequis
+## 1. Prerequisites
 
-- Docker et Docker Compose
-- Les fichiers de données brutes du challenge Rakuten (voir §3)
+- Docker and Docker Compose
+- Raw data files from the Rakuten challenge (see §3)
 
 ## 2. Configuration (`.env`)
 
@@ -84,17 +84,27 @@ RANDOM_STATE=42
 API_HOST=0.0.0.0
 API_PORT=8000
 LOG_LEVEL=INFO
+
+# --- MLflow ---
+MLFLOW_TRACKING_URI=postgresql+psycopg://"POSTGRES_USER":"POSTGRES_PASSWORD"@localhost:5432/mlops
+# replace "POSTGRES_PASSWORD" and "POSTGRES_PASSWORD"
+MLFLOW_EXPERIMENT_NAME=rakuten-baseline-v2
+MLFLOW_REGISTERED_MODEL_NAME=rakuten_baseline
+
+# --- Airflow ---
+AIRFLOW_UID=1000
+AIRFLOW_FERNET_KEY=<create a key>
+AIRFLOW_JWT_SECRET=<create a key>
 ```
 
-> ⚠️ **Important** : `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` ne sont
-> lus par Postgres **qu'à la toute première initialisation** du volume de
-> données. Si tu changes ces valeurs après coup, Postgres les ignorera et
-> gardera les anciens identifiants → erreurs d'authentification. Dans ce cas,
-> supprimer le volume (§7 Dépannage) pour forcer une réinitialisation propre.
+> ⚠️ **Important** : "POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB" 
+are only read by Postgres during the very first initialization of the data volume.
+If you change them afterwards, Postgres will ignore the new values and keep the old ones → authentication errors.
+In that case, delete the volume (§7 Troubleshooting) to force a clean reinitialization.
 
-## 3. Données brutes attendues
+## 3. Expected raw data
 
-Placer dans `src/data/raw/` :
+Place the following in `src/data/raw/` :
 
 ```
 src/data/raw/
@@ -107,37 +117,36 @@ src/data/raw/
         └── ...
 ```
 
-> Le dataset officiel Rakuten France Multimodal Product Classification
-> s'extrait avec cette double imbrication (`image_train/image_train/`).
-> Si ta structure diffère, ajuste `IMAGE_TRAIN_DIR` dans `src/config.py`.
+> The official Rakuten France Multimodal Product Classification dataset
+> extracts with this double nesting (image_train/image_train/).
+> If your structure differs, adjust IMAGE_TRAIN_DIR in src/config.py.
 
-## 4. Démarrage complet (première installation)
+## 4. Full startup (first installation)
 
 ```bash
-# 1. Démarrer les services (API + PostgreSQL)
+# 1. Start services (API + PostgreSQL)
 docker compose up -d --build
 
-# 2. Vérifier que tout est sain
+# 2. Check everything is healthy
 docker compose ps
 curl http://localhost:8000/health
 # → {"status":"ok","database":"up","model_available":false}
 
-# 3. Ingestion one-shot des données (texte + résolution des chemins d'images)
+# 3. One-shot ingestion of data (text + image path resolution)
 docker compose exec api python -m src.data.make_dataset --force
 
-# 4. Entraînement du modèle baseline (texte + image, ResNet18)
-#    ⚠️ Sur le dataset complet (~85 000 lignes), l'extraction d'embeddings
-#    image en CPU est longue : compter plusieurs heures. Prévoir de laisser
-#    tourner sans interrompre le terminal (pas de veille PC / coupure SSH).
+# 4. Train the baseline model (text + image, ResNet18)
+#    ⚠️ On the full dataset (~85k rows), image embedding extraction on CPU is long:
+#    expect several hours. Keep the terminal running (no sleep mode / SSH drop).
 docker compose exec api python -m src.models.training
 
-# 5. Vérifier que le modèle est bien chargé par l'API
+# 5. Check that the model is loaded by the API
 curl http://localhost:8000/health
 # → {"status":"ok","database":"up","model_available":true}
 curl http://localhost:8000/model
 ```
 
-### Test rapide (sous-échantillon)
+### Quick test (subsample)
 
 Pour valider que le pipeline fonctionne bout-en-bout sans attendre l'entraînement
 complet, utiliser `--limit` (recommandé : ≥ 3000, sinon certaines classes rares
@@ -147,58 +156,58 @@ n'ont pas assez de représentants pour le split stratifié) :
 docker compose exec api python -m src.models.training --limit 3000
 ```
 
-## 5. Utilisation quotidienne
+## 5. Daily usage
 
 ```bash
-# Démarrer les services existants
+# Start existing services
 docker compose up -d
 
-# Arrêter les services (sans supprimer les données)
+# Stop services (without deleting data)
 docker compose down
 
-# Reconstruire l'image après une modification de code ou requirements.txt
+# Rebuild image after code or requirements.txt changes
 docker compose up -d --build
+
 ```
 
-> ⚠️ `docker compose build` seul ne recrée **pas** le conteneur en cours
-> d'exécution — toujours utiliser `docker compose up -d --build` après une
-> modification de code, sinon les commandes `exec` continueront de tourner
-> sur l'ancienne image/conteneur.
+> ⚠️ `docker compose build` alone does not recreate the running container —
+always use docker compose up -d --build after code changes, otherwise
+exec commands will still run on the old container.
 
-## 6. Endpoints API
+## 6. API Endpoints
 
 Documentation interactive : http://localhost:8000/docs
 
 | Méthode | Route | Description |
 |---|---|---|
-| GET | `/health` | État de l'API, de la base et disponibilité du modèle |
-| GET | `/model` | Métadonnées et métriques du modèle actuellement servi |
-| POST | `/training` | (Ré)entraîne le modèle. Body optionnel : `test_size`, `random_state`, `limit` |
-| POST | `/predict` | Prédit `prdtypecode` pour une ou plusieurs observations |
+| GET | `/health` | API status, database status, model availability |
+| GET | `/model` | Metadata and metrics of the currently served model |
+| POST | `/training` | (Re)train the model. Optional body: test_size, random_state, limit|
+| POST | `/predict` | Predict prdtypecode for one or multiple observations |
 
-**Exemple — entraînement (test rapide) :**
+**Example — quick training:**
 ```bash
 curl -X POST http://localhost:8000/training \
   -H "Content-Type: application/json" \
   -d '{"limit": 3000}'
 ```
 
-**Exemple — entraînement complet :**
+**Example — full training:**
 ```bash
 curl -X POST http://localhost:8000/training \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
 
-**Exemple — prédiction :**
+**Example — prédiction :**
 ```bash
 curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
   -d '{
     "records": [
       {
-        "designation": "Console de jeu portable retro",
-        "description": "400 jeux inclus",
+        "designation": "Retro portable gaming console",
+        "description": "400 games included",
         "productid": 123456,
         "imageid": 987654,
         "image_path": null
@@ -207,33 +216,31 @@ curl -X POST http://localhost:8000/predict \
   }'
 ```
 
-> `image_path: null` est accepté : le transformer d'embeddings image renvoie
-> un vecteur nul si l'image est absente ou introuvable (prédiction basée sur
-> le texte seul dans ce cas, pas d'erreur).
+> image_path: null is accepted: the image embedding transformer returns
+> a zero vector if the image is missing or not found (prediction based on text only).
 
-## 7. Scripts en ligne de commande
+## 7. Command-line scripts
 
 ```bash
-# Ingestion (one-shot, idempotent sauf --force)
+# Ingestion (one-shot, idempotent except with --force)
 docker compose exec api python -m src.data.make_dataset [--force] [--chunk-size 500]
 
-# Entraînement
+# Training
 docker compose exec api python -m src.models.training [--test-size 0.2] [--random-state 42] [--limit N]
 
-# Prédiction sur un échantillon de la base
+# Prediction on a database sample
 docker compose exec api python -m src.models.predict --sample
 
-# Prédiction sur un fichier JSON (objet ou liste d'objets)
+# Prediction on a JSON file (object or list of objects)
 docker compose exec api python -m src.models.predict --input payload.json [--no-log]
 ```
 
-## 8. Dépannage
+## 8. Troubleshooting
 
-**`FATAL: password authentication failed`** ou **`role "..." does not exist`**
-→ Le volume PostgreSQL a été initialisé avec d'anciens identifiants différents
-de `.env` actuel (Postgres ne relit `POSTGRES_*` qu'à la création du volume).
-Réinitialiser proprement (⚠️ supprime les données ingérées, pas le modèle
-entraîné qui est sur disque dans `models/`) :
+**FATAL: password authentication failed or role "..." does not exist"**
+- The PostgreSQL volume was initialized with old credentials different from the current .env.
+- Postgres only reads POSTGRES_* at volume creation.
+-Reset cleanly (⚠️ deletes ingested data, but not the trained model stored in models/`) :
 ```bash
 docker compose down
 docker volume ls                              # repérer le volume *_pgdata
@@ -242,33 +249,30 @@ docker compose up -d
 docker compose exec api python -m src.data.make_dataset --force
 ```
 
-**Le conteneur `api` n'apparaît pas dans `docker ps`**
-→ Il a probablement crashé au démarrage. Voir le traceback :
+**The api container does not appear in docker ps**
+→ It likely crashed at startup. Check the traceback:
 ```bash
 docker compose ps -a
 docker compose logs api --tail=100
 ```
-Causes fréquentes : dépendance manquante dans `requirements.txt`
-(`ModuleNotFoundError`), import cassé entre fichiers après une modification.
+Common causes: missing dependency in requirements.txt (ModuleNotFoundError), broken import.
 
 **`ValueError: The least populated classes in y have only 1 member`**
-→ Le split stratifié échoue car `--limit` est trop petit : certaines classes
-rares n'ont qu'un seul représentant dans l'échantillon. Augmenter `--limit`
-(≥ 3000 recommandé) ou ne pas le spécifier pour utiliser le dataset complet.
+- Stratified split fails because --limit is too small.
+  Increase --limit (≥ 3000 recommended) or use the full dataset.
 
-**Une modification de code n'a aucun effet après rebuild**
-→ Vérifier que le fichier a bien été sauvegardé localement, puis utiliser
-`docker compose up -d --build` (pas seulement `docker compose build`) pour
-recréer le conteneur avec la nouvelle image.
+**Code changes have no effect after rebuild**
+- Ensure the file was saved, then use
+docker compose up -d --build (not just docker compose build).
 
-## 9. Objectifs et métriques (rappel Phase 1)
+## 9. Objectives and metrics (Phase 1 recap))
 
-- **Métrique principale** : weighted F1-score (classes déséquilibrées)
-- **Cible baseline** : > 0.65
-- **Résultat obtenu** (dataset complet, texte + image) : `accuracy ≈ 0.822`,
-  `weighted_f1 ≈ 0.824`
+* Main metric: weighted F1‑score (imbalanced classes)
+* Baseline target: > 0.65
+* Obtained result (full dataset, text + image):
+    accuracy ≈ 0.822, weighted_f1 ≈ 0.824
 
-## 10. Architecture du pipeline
+## 10. Pipeline architecture
 
 ```
 PostgreSQL (raw_samples, features en JSONB)
@@ -278,10 +282,10 @@ src/features/build_features.py
   ├── TF-IDF (designation) ──┐
   ├── TF-IDF (description) ──┤
   ├── Scaler (productid, imageid) ──┤──► ColumnTransformer ──► LogisticRegression
-  └── ImageEmbeddingTransformer (image_path, ResNet18 gelé) ──┘
+  └── ImageEmbeddingTransformer (image_path, ResNet18 frozen ) ──┘
         │
         ▼
-models/baseline_logreg.joblib (pipeline complet sauvegardé)
+models/baseline_logreg.joblib (full pipeline saved)
         │
         ▼
 src/api/main.py — endpoints /training, /predict, /health, /model
