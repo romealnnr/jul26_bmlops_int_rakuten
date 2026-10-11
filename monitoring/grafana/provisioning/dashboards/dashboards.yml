@@ -1,11 +1,32 @@
+# Dashboard provisioning.
+#
+# `foldersFromFilesStructure` makes Grafana build its folder tree from the
+# directory tree under `path`: dashboards/Rakuten/*.json land in a folder
+# called Rakuten. The repository layout and what people see in the sidebar
+# become the same thing, and adding a dashboard to a folder stops being a
+# second edit to this file that somebody will forget.
+#
+# It also lines the dashboards up with the alert rules, which name their own
+# folder in rules.yml and were already going to Rakuten. Having the alerts
+# about a model in one folder and the charts of that model in another is the
+# kind of small incoherence that makes people stop trusting the whole thing.
+#
+# Two things this file is easy to get wrong, both of which fail silently -
+# Grafana starts, logs nothing unusual, and puts every dashboard at the root:
+#
+#   * `foldersFromFilesStructure` belongs under `options`, beside `path`.
+#     As a provider key it is simply ignored.
+#   * `folder` must stay unset. An explicit folder overrides the directory
+#     structure and collapses everything back into one place.
+
 apiVersion: 1
 
 providers:
   - name: default
     orgId: 1
-    folder: ""
     type: file
     disableDeletion: false
     updateIntervalSeconds: 30
     options:
       path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true
