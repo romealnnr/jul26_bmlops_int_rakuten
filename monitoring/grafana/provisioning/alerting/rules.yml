@@ -15,6 +15,12 @@
 # nuisance: a single bad scrape should never page anyone, and every rule
 # here has to stay wrong for a while before it says so.
 #
+# Every query is aggregated, and the choice of aggregation is the rule. One
+# API container or four behind a load balancer, each rule still evaluates a
+# single series - and `min(rakuten_model_loaded)` fires when ANY replica has
+# lost its model, which is the point: a fault that only affects a quarter of
+# the traffic is still a fault, and an average would bury it.
+#
 # No contact points are defined. These rules surface in Grafana's alert
 # list and on the dashboards; wiring them to email or a webhook is a
 # separate decision, and one that should be made deliberately - an alert
@@ -49,7 +55,7 @@ groups:
             datasourceUid: prometheus_ds
             model:
               refId: A
-              expr: rakuten_model_loaded
+              expr: min(rakuten_model_loaded)
               instant: true
           - refId: B
             datasourceUid: __expr__
@@ -87,7 +93,7 @@ groups:
             datasourceUid: prometheus_ds
             model:
               refId: A
-              expr: rakuten_drift_share_of_drifted_columns
+              expr: max(rakuten_drift_share_of_drifted_columns)
               instant: true
           - refId: B
             datasourceUid: __expr__
@@ -135,7 +141,7 @@ groups:
             datasourceUid: prometheus_ds
             model:
               refId: A
-              expr: rakuten_drift_report_age_seconds
+              expr: max(rakuten_drift_report_age_seconds)
               instant: true
           - refId: B
             datasourceUid: __expr__
@@ -172,7 +178,7 @@ groups:
             datasourceUid: prometheus_ds
             model:
               refId: A
-              expr: increase(rakuten_training_runs_total{outcome="failed"}[1h])
+              expr: sum(increase(rakuten_training_runs_total{outcome="failed"}[1h]))
               instant: true
           - refId: B
             datasourceUid: __expr__

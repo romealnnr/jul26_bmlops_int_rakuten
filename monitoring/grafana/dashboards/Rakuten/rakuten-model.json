@@ -1,7 +1,7 @@
 {
   "uid": "rakuten-model",
   "title": "Model — Rakuten",
-  "description": "The model layer: what is being served, what it predicts, how sure it is, and whether the training and drift loops are still alive. API Health covers the web service; this covers the thing the web service exists to serve.",
+  "description": "The model layer: what is being served, what it predicts, how sure it is, and whether the training and drift loops are still alive. API Health covers the web service; this covers the thing the web service exists to serve. Every query is aggregated across replicas, so the panels read the same whether the API runs as one container or behind a load balancer.",
   "tags": [
     "rakuten",
     "model",
@@ -10,7 +10,7 @@
   "timezone": "browser",
   "editable": true,
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": {
     "from": "now-6h",
@@ -20,7 +20,7 @@
     {
       "type": "stat",
       "title": "Model loaded",
-      "description": "Whether the API can actually serve. This asks the loader, not the filesystem: an artifact that exists but cannot be read counts as not loaded.",
+      "description": "Whether the API can actually serve. This asks the loader, not the filesystem: an artifact that exists but cannot be read counts as not loaded. min() rather than max() or avg(): behind a load balancer, one replica without a model is a real fault that serves real 409s, and any other aggregation would hide it behind its healthy siblings.",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -38,7 +38,7 @@
             "type": "prometheus",
             "uid": "prometheus_ds"
           },
-          "expr": "rakuten_model_loaded",
+          "expr": "min(rakuten_model_loaded)",
           "editorMode": "code",
           "range": false,
           "instant": true
@@ -93,7 +93,7 @@
     {
       "type": "stat",
       "title": "Served version",
-      "description": "Which model is answering right now. The value is always 1; the identity is in the labels, which is how Prometheus carries strings.",
+      "description": "Which model is answering right now. The value is always 1; the identity is in the labels, which is how Prometheus carries strings. Aggregated by label so that N replicas serving the same model show as one row rather than N identical ones; two rows here means the replicas disagree, which is worth seeing.",
       "gridPos": {
         "h": 4,
         "w": 6,
@@ -111,7 +111,7 @@
             "type": "prometheus",
             "uid": "prometheus_ds"
           },
-          "expr": "rakuten_model_info",
+          "expr": "max by (model_name, version) (rakuten_model_info)",
           "editorMode": "code",
           "range": false,
           "instant": true,
@@ -150,7 +150,7 @@
     {
       "type": "stat",
       "title": "Model age",
-      "description": "How long ago the served model was trained. Age is not a defect by itself - it is the number to hold next to the drift panels below when deciding whether to retrain.",
+      "description": "How long ago the served model was trained. Age is not a defect by itself - it is the number to hold next to the drift panels below when deciding whether to retrain. min() of the training timestamp is the oldest model any replica is serving, so this shows the worst case rather than an average.",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -168,7 +168,7 @@
             "type": "prometheus",
             "uid": "prometheus_ds"
           },
-          "expr": "time() - rakuten_model_trained_at_timestamp_seconds",
+          "expr": "time() - min(rakuten_model_trained_at_timestamp_seconds)",
           "editorMode": "code",
           "range": false,
           "instant": true
@@ -215,7 +215,7 @@
     {
       "type": "stat",
       "title": "Training",
-      "description": "1 while a run is executing. Worth checking before reading the latency panels in API Health: the same container trains and serves, so response times rise during a run.",
+      "description": "1 while a run is executing. Worth checking before reading the latency panels in API Health: the same container trains and serves, so response times rise during a run. max(): a run on any replica counts as a run in progress.",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -233,7 +233,7 @@
             "type": "prometheus",
             "uid": "prometheus_ds"
           },
-          "expr": "rakuten_training_in_progress",
+          "expr": "max(rakuten_training_in_progress)",
           "editorMode": "code",
           "range": false,
           "instant": true
@@ -288,7 +288,7 @@
     {
       "type": "stat",
       "title": "Last drift report",
-      "description": "Age of the most recent drift report, read from the database at scrape time. This is the panel that watches the watcher: if the drift job dies, the drift charts keep showing their last values and look healthy while this number climbs.",
+      "description": "Age of the most recent drift report, read from the database at scrape time. This is the panel that watches the watcher: if the drift job dies, the drift charts keep showing their last values and look healthy while this number climbs. Every replica reads the same table, so these agree; max() collapses them to one series and errs towards the older answer if they ever do not. Two negative sentinels, because the two situations call for different actions: -1 is 'nobody has measured drift yet', -2 is 'the monitoring cannot read its own table'.",
       "gridPos": {
         "h": 4,
         "w": 6,
@@ -306,7 +306,7 @@
             "type": "prometheus",
             "uid": "prometheus_ds"
           },
-          "expr": "rakuten_drift_report_age_seconds",
+          "expr": "max(rakuten_drift_report_age_seconds)",
           "editorMode": "code",
           "range": false,
           "instant": true
@@ -337,6 +337,11 @@
                   "text": "never run",
                   "color": "text",
                   "index": 0
+                },
+                "-2": {
+                  "text": "DB UNREADABLE",
+                  "color": "red",
+                  "index": 1
                 }
               }
             }
@@ -603,7 +608,7 @@
             "type": "prometheus",
             "uid": "prometheus_ds"
           },
-          "expr": "rakuten_drift_share_of_drifted_columns",
+          "expr": "max(rakuten_drift_share_of_drifted_columns)",
           "editorMode": "code",
           "range": true,
           "legendFormat": "drifted share"
@@ -614,7 +619,7 @@
             "type": "prometheus",
             "uid": "prometheus_ds"
           },
-          "expr": "rakuten_drift_columns_checked",
+          "expr": "max(rakuten_drift_columns_checked)",
           "editorMode": "code",
           "range": true,
           "legendFormat": "columns checked"

@@ -12,19 +12,30 @@ alerts silently - they simply show "No data" - so treat them as an API.
 The `rakuten_` prefix separates them from the generic server metrics, so a
 dashboard query can never pick one up by accident.
 
-Two deliberate omissions:
+Three deliberate choices:
 
   * No ratios. A flag *rate* is not stored; the flagged and total counters
     are, and the rate is computed in PromQL. A pre-divided ratio cannot be
-    re-aggregated across instances or time windows afterwards.
+    re-aggregated afterwards - which stops being academic the moment the API
+    runs behind a load balancer, because averaging percentages taken over
+    different request volumes gives the wrong number.
 
   * No per-column drift scores. Those stay in the drift_metrics table, which
     is the right store for them: exact, auditable, and cheap to keep. Only
-    the summary - how much drifted, and how old the report is - comes here,
-    because those are the two things you alert on.
+    the summary - how much drifted, how many columns, and how old the report
+    is - comes here, because those are the three things you alert on.
+
+  * The drift summary is read from the database at scrape time, not set when
+    a drift run finishes. Counters and in-process gauges belong to the
+    process that incremented them; with several API replicas, only the one
+    that happened to serve /drift/compute would know the answer and the rest
+    would report zero forever. Reading the table means every replica gives
+    the same answer, and the number of replicas stops mattering.
 """
 
 from __future__ import annotations
+
+import time
 
 from prometheus_client import Counter, Gauge, Histogram
 
@@ -34,7 +45,8 @@ from prometheus_client import Counter, Gauge, Histogram
 
 MODEL_LOADED = Gauge(
     "rakuten_model_loaded",
-    "1 when a model artifact is loaded and able to serve, 0 otherwise.",
+    "1 when a model artifact is loaded and able to serve, 0 otherwise. "
+    "Per replica: aggregate with min() to ask whether ALL replicas can serve.",
 )
 
 MODEL_INFO = Gauge(
@@ -106,7 +118,8 @@ TRAINING_IN_PROGRESS = Gauge(
 DRIFT_SHARE = Gauge(
     "rakuten_drift_share_of_drifted_columns",
     "Share of monitored columns above their threshold in the latest drift "
-    "report, between 0 and 1.",
+    "report, between 0 and 1. -1 when no report has ever been produced, -2 "
+    "when the drift table could not be read.",
 )
 
 DRIFT_COLUMNS_CHECKED = Gauge(
@@ -120,7 +133,8 @@ DRIFT_REPORT_AGE = Gauge(
     "Age of the most recent drift report. This is the metric that watches "
     "the watcher: if the drift job dies, the drift panel keeps displaying "
     "its last values and looks healthy, while this number climbs. Silence "
-    "and 'no drift' are indistinguishable without it.",
+    "and 'no drift' are indistinguishable without it. -1 when no report has "
+    "ever been produced, -2 when the drift table could not be read.",
 )
 
 
@@ -185,35 +199,37 @@ def observe_model(info: dict | None) -> None:
         MODEL_TRAINED_AT.set(_as_timestamp(trained_at))
 
 
-def observe_drift(metrics: list[dict]) -> None:
-    """Record the summary of a drift report.
+# --------------------------------------------------------------------------
+# Drift, read from the database at scrape time
+# --------------------------------------------------------------------------
 
-    `metrics` is the list compute_drift() returns: one dict per column with
-    `score` and `threshold`.
-    """
-    DRIFT_COLUMNS_CHECKED.set(len(metrics))
+# Two sentinels, because two very different situations would otherwise look
+# identical. 0 is not available for either: a panel must not read "brand new"
+# or "no drift" when the truth is "never ran" or "cannot see the database".
+NEVER = -1.0       # no drift report has ever been produced
+UNREADABLE = -2.0  # the drift table could not be read
 
-    if not metrics:
-        DRIFT_SHARE.set(0.0)
-        return
-
-    drifted = sum(
-        1
-        for m in metrics
-        if m.get("threshold") is not None and m["score"] > m["threshold"]
-    )
-    DRIFT_SHARE.set(drifted / len(metrics))
+# Prometheus asks each gauge separately, so without this the three drift
+# gauges would run three identical queries per scrape. One scrape interval is
+# 15s; five seconds of cache collapses them into one query without ever
+# serving a value from a previous scrape.
+_CACHE_TTL_SECONDS = 5.0
+_cache: tuple[float, tuple[float, float, float]] | None = None
 
 
-def register_drift_age_collector() -> None:
-    """Make DRIFT_REPORT_AGE answer from the database at scrape time.
+def _latest_drift() -> tuple[float, float, float]:
+    """(age_seconds, drifted_share, columns_checked) for the newest report.
 
-    The age has to be right even when nothing is running - especially then,
-    since a dead drift job is exactly what this measures. A background task
-    that updates it would die with the thing it is watching, so instead the
-    value is computed when Prometheus asks, straight from the table.
+    Returns (NEVER, NEVER, 0) when no report has ever been produced, and
+    (UNREADABLE, UNREADABLE, 0) when the table cannot be read. Distinguishing
+    them matters for the same reason this module exists: "nobody has measured
+    drift yet" and "the monitoring cannot see its own data" call for different
+    actions, and a single sentinel would make them indistinguishable - the
+    failure mode these metrics are here to prevent.
 
-    Call once at application startup.
+    Either way the exception is swallowed. An unreachable database is its own
+    alert elsewhere; what this function must never do is take the whole
+    /metrics endpoint down with it.
     """
     from datetime import datetime, timezone
 
@@ -221,24 +237,56 @@ def register_drift_age_collector() -> None:
 
     from src.data.db import DriftMetric, get_session
 
-    def _age_seconds() -> float:
-        try:
-            with get_session() as session:
-                latest = session.execute(
-                    select(func.max(DriftMetric.run_at))
-                ).scalar_one_or_none()
-        except Exception:  # noqa: BLE001
-            # A database that cannot be reached is its own alert elsewhere;
-            # it must not take the whole /metrics endpoint down with it.
-            return -1.0
+    global _cache
 
-        if latest is None:
-            # No report has ever been produced. -1 rather than 0, so a panel
-            # cannot read "brand new" when the truth is "never ran".
-            return -1.0
+    now = time.monotonic()
+    if _cache is not None and now - _cache[0] < _CACHE_TTL_SECONDS:
+        return _cache[1]
 
-        if latest.tzinfo is None:
-            latest = latest.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - latest).total_seconds()
+    result = (NEVER, NEVER, 0.0)
+    try:  # noqa: SIM105
+        with get_session() as session:
+            # run_at comes from the database's now(), which in Postgres is
+            # the transaction start time - so every row written by one drift
+            # run shares the same value and identifies that run exactly.
+            latest = session.execute(
+                select(func.max(DriftMetric.run_at))
+            ).scalar_one_or_none()
 
-    DRIFT_REPORT_AGE.set_function(_age_seconds)
+            if latest is not None:
+                rows = session.execute(
+                    select(DriftMetric.score, DriftMetric.threshold).where(
+                        DriftMetric.run_at == latest
+                    )
+                ).all()
+
+                if latest.tzinfo is None:
+                    latest = latest.replace(tzinfo=timezone.utc)
+                age = (datetime.now(timezone.utc) - latest).total_seconds()
+
+                total = len(rows)
+                drifted = sum(
+                    1 for score, threshold in rows
+                    if threshold is not None and score > threshold
+                )
+                share = (drifted / total) if total else 0.0
+                result = (age, share, float(total))
+    except Exception:  # noqa: BLE001
+        result = (UNREADABLE, UNREADABLE, 0.0)
+
+    _cache = (now, result)
+    return result
+
+
+def register_drift_collectors() -> None:
+    """Make the three drift gauges answer from the database at scrape time.
+
+    The age in particular has to be right even when nothing is running -
+    especially then, since a dead drift job is exactly what it measures. A
+    background task that updated it would die with the thing it is watching.
+
+    Call once at application startup.
+    """
+    DRIFT_REPORT_AGE.set_function(lambda: _latest_drift()[0])
+    DRIFT_SHARE.set_function(lambda: _latest_drift()[1])
+    DRIFT_COLUMNS_CHECKED.set_function(lambda: _latest_drift()[2])

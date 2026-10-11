@@ -55,10 +55,11 @@ async def lifespan(app: FastAPI):
     # not on its first failed prediction.
     _refresh_model_metrics()
 
-    # The drift report's age is computed at scrape time, straight from the
-    # database. A background task updating it would die with the thing it is
-    # meant to be watching.
-    mon.register_drift_age_collector()
+    # The drift summary - age, share, column count - is computed at scrape
+    # time, straight from the database. A background task updating it would
+    # die with the thing it is meant to be watching, and an in-process gauge
+    # would be known only to whichever replica served the drift run.
+    mon.register_drift_collectors()
 
     yield
 
@@ -236,8 +237,8 @@ async def run_drift_computation() -> dict[str, Any]:
         logger.exception("Échec du calcul de drift")
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
-    # Only the summary goes to Prometheus; the per-column scores stay in
-    # drift_metrics, which is the right store for them.
-    mon.observe_drift(result["metrics"])
-
+    # Nothing is pushed to Prometheus here on purpose. The drift gauges read
+    # the drift_metrics table when Prometheus scrapes them, so the numbers are
+    # correct for every replica - including the ones that never served this
+    # request - and they stay correct if this process restarts.
     return result
