@@ -1,4 +1,10 @@
 import os
+from pathlib import Path
+
+
+RAW_DIR = Path(os.getenv("RAW_DIR", "/data/raw"))
+API_IMAGE_ROOT = os.getenv("API_IMAGE_ROOT", "/app/src/data/raw")
+Y_TRAIN_FILE = "Y_train_CVw08PX.csv"
 
 API_INTERNAL_URL = os.getenv("API_INTERNAL_URL", "http://api:8000")
 PROMETHEUS_INTERNAL_URL = os.getenv("PROMETHEUS_INTERNAL_URL", "http://prometheus:9090")
