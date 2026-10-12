@@ -4,7 +4,9 @@ import pandas as pd
 import requests
 import streamlit as stlt
 
-from config import API_INTERNAL_URL, FLAG_THRESHOLD
+from config import API_INTERNAL_URL, FLAG_THRESHOLD, RAW_DIR, API_IMAGE_ROOT, Y_TRAIN_FILE
+
+import random
 
 
 EXAMPLE_RECORD = {
@@ -79,6 +81,77 @@ def show_model_info(info: dict):
         stlt.json(other)
 
 
+@stlt.cache_data
+def load_split(split: str) -> pd.DataFrame:
+    x = pd.read_csv(RAW_DIR / f"X_{split}_update.csv", index_col=0)
+    x["designation"] = x["designation"].fillna("")
+    x["description"] = x["description"].fillna("")
+    if split == "train":
+        y = pd.read_csv(RAW_DIR / Y_TRAIN_FILE, index_col=0)
+        x = x.join(y)  # adds the target column (e.g. prdtypecode)
+    return x
+
+
+def _random_row(n: int):
+    stlt.session_state["row_pos"] = random.randrange(n)
+
+
+def dataset_sample_mode():
+    split = stlt.radio("Split", ["train", "test"], horizontal=True)
+    try:
+        df = load_split(split)
+    except FileNotFoundError as exc:
+        stlt.error(f"Dataset file not found: {exc}. Is ./src/data/raw mounted into the container?")
+        return
+
+    stlt.session_state.setdefault("row_pos", 0)
+    if stlt.session_state["row_pos"] >= len(df):
+        stlt.session_state["row_pos"] = 0
+
+    c1, c2 = stlt.columns([1, 3])
+    c1.button("🎲 Random row", on_click=_random_row, args=(len(df),))
+    pos = c2.number_input("Row position", 0, len(df) - 1, key="row_pos")
+
+    row = df.iloc[int(pos)]
+    fname = f"image_{int(row['imageid'])}_product_{int(row['productid'])}.jpg"
+    local_img = RAW_DIR / f"image_{split}" / fname
+    api_img = f"{API_IMAGE_ROOT}/image_{split}/{fname}"
+
+    left, right = stlt.columns([1, 2])
+    with left:
+        if local_img.exists():
+            stlt.image(str(local_img), use_container_width=True)
+        else:
+            stlt.warning(f"Image not found: {fname}")
+    with right:
+        stlt.markdown(f"**{row['designation']}**")
+        stlt.caption(row["description"][:500] or "(no description)")
+        stlt.write(f"productid: `{int(row['productid'])}`, imageid: `{int(row['imageid'])}`")
+        target_col = df.columns[-1] if split == "train" else None
+        if target_col:
+            stlt.write(f"True label (`{target_col}`): **{row[target_col]}**")
+
+    use_image = stlt.checkbox("Send image_path to the API", value=True,
+                            help="Untick to see how the prediction changes without the image.")
+
+    if stlt.button("Predict this product"):
+        record = {
+            "designation": row["designation"],
+            "description": row["description"],
+            "productid": int(row["productid"]),
+            "imageid": int(row["imageid"]),
+            "image_path": api_img if use_image else None,
+        }
+        ok, data = call_api("POST", "/predict", json={"records": [record]})
+        if ok:
+            show_predictions(data)
+            if target_col:
+                stlt.info(f"Predicted: {data['results'][0]['prediction']}, true label: {row[target_col]}")
+        else:
+            stlt.error(data)
+
+
+
 
 def render():
     # status
@@ -101,10 +174,12 @@ def render():
     # predict
     stlt.subheader("Prediction")
     mode = stlt.radio(
-        "Input mode", ["Single product", "CSV batch", "Raw JSON"], horizontal=True
+        "Input mode", ["Dataset sample", "Single product", "CSV batch", "Raw JSON"], horizontal=True
     )
 
-    if mode == "Single product":
+    if mode == "Dataset sample":
+        dataset_sample_mode()
+    elif mode == "Single product":
         with stlt.form("predict_single"):
             designation = stlt.text_input("designation", EXAMPLE_RECORD["designation"])
             description = stlt.text_area("description", EXAMPLE_RECORD["description"])
