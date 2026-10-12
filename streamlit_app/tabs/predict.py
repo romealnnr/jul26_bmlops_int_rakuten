@@ -4,7 +4,7 @@ import pandas as pd
 import requests
 import streamlit as stlt
 
-from config import API_INTERNAL_URL, FLAG_THRESHOLD, RAW_DIR, API_IMAGE_ROOT, Y_TRAIN_FILE
+from config import API_INTERNAL_URL, FLAG_THRESHOLD, RAW_DIR, API_IMAGE_ROOT, Y_TRAIN_FILE, PRDTYPECODE_LABELS
 
 import random
 
@@ -16,6 +16,13 @@ EXAMPLE_RECORD = {
     "imageid": 987654,
     "image_path": None,
 }
+
+def label(code) -> str:
+    try:
+        return f"{int(code)} ({PRDTYPECODE_LABELS.get(int(code), 'unknown')})"
+    except (TypeError, ValueError):
+        return str(code)
+    
 
 def to_df(payload: dict) -> pd.DataFrame:
     """ Adds a results flag column to the prediction results """
@@ -56,7 +63,7 @@ def show_predictions(payload: dict):
     if len(df) == 1:
         row = df.iloc[0]
         c1, c2, c3 = stlt.columns(3)
-        c1.metric("Predicted class", int(row["prediction"]))
+        c1.metric("Predicted class", label(row["prediction"]))
         c2.metric("Probability", f"{row['probability']:.1%}")
         c3.metric("Model version", row["model_version"])
         if row["flagged"]:
@@ -129,7 +136,7 @@ def dataset_sample_mode():
         stlt.write(f"productid: `{int(row['productid'])}`, imageid: `{int(row['imageid'])}`")
         target_col = df.columns[-1] if split == "train" else None
         if target_col:
-            stlt.write(f"True label (`{target_col}`): **{row[target_col]}**")
+            stlt.write(f"True label: **{label(row[target_col])}**")
 
     use_image = stlt.checkbox("Send image_path to the API", value=True,
                             help="Untick to see how the prediction changes without the image.")
@@ -146,7 +153,8 @@ def dataset_sample_mode():
         if ok:
             show_predictions(data)
             if target_col:
-                stlt.info(f"Predicted: {data['results'][0]['prediction']}, true label: {row[target_col]}")
+                pred = data["results"][0]["prediction"]
+                stlt.info(f"Predicted: {label(pred)}, true label: {label(row[target_col])}")
         else:
             stlt.error(data)
 
