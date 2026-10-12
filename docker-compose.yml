@@ -162,6 +162,23 @@ services:
       - prometheus
       - db
 
+  streamlit:
+    build: ./streamlit_app
+    container_name: mlops_streamlit
+    restart: unless-stopped
+    environment:
+      - API_INTERNAL_URL: http://api:8000
+      - PROMETHEUS_INTERNAL_URL: http://prometheus:9090
+      - GRAFANA_URL: http://localhost:3000
+      - PROMETHEUS_URL: http://localhost:9090
+      - AIRFLOW_URL: http://localhost:8081
+      - API_DOCS_URL: http://localhost:8000/docs
+      - DAGSHUB_URL: http://dagshub.com/<user>/<repo>
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+
 volumes:
   pgdata:
   prometheus_data:
