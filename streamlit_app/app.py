@@ -9,4 +9,4 @@ tab1, tab2 = stlt.tabs(["📊 Dashboards", "🔮 Model & API"])
 with tab1:
     dashboards.render()
 with tab2:
-    dashboards.render()
+    predict.render()
