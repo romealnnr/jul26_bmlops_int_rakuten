@@ -4,7 +4,7 @@ import pandas as pd
 import requests
 import streamlit as stlt
 
-from config import API_INTERNAL_URL
+from config import API_INTERNAL_URL, FLAG_THRESHOLD
 
 
 EXAMPLE_RECORD = {
@@ -14,6 +14,12 @@ EXAMPLE_RECORD = {
     "imageid": 987654,
     "image_path": None,
 }
+
+def to_df(payload: dict) -> pd.DataFrame:
+    """ Adds a results flag column to the prediction results """
+    df = pd.DataFrame(payload["results"])
+    df["flagged"] = df["probability"] < FLAG_THRESHOLD
+    return df
 
 
 def call_api(method: str, path: str, timeout: int = 30, **kwargs):
@@ -38,17 +44,39 @@ def call_api(method: str, path: str, timeout: int = 30, **kwargs):
 
 
 def show_predictions(payload: dict):
-    
-    stlt.success(f"{payload['count']} prediction(s)")
-    df = pd.DataFrame(payload["results"])
+    df = to_df(payload)
+    n_flagged = int(df["flagged"].sum())
+    stlt.success(
+        f"{payload['count']} prediction(s), {n_flagged} flagged "
+        f"(confidence < {FLAG_THRESHOLD:.0%})"
+    )
     stlt.dataframe(df, use_container_width=True)
-    
     if len(df) == 1:
         row = df.iloc[0]
         c1, c2, c3 = stlt.columns(3)
         c1.metric("Predicted class", int(row["prediction"]))
         c2.metric("Probability", f"{row['probability']:.1%}")
         c3.metric("Model version", row["model_version"])
+        if row["flagged"]:
+            stlt.warning("Low confidence: this prediction would be flagged.")
+
+
+def show_model_info(info: dict):
+    c1, c2, c3 = stlt.columns(3)
+    c1.metric("Model", info["model_name"])
+    c2.metric("Version", info["version"])
+    c3.metric("Features", info["n_features"])
+    stlt.caption(f"Trained at: {info['trained_at']}")
+
+    metrics = info.get("metrics") or {}
+    numeric = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
+    other = {k: v for k, v in metrics.items() if k not in numeric}
+    if numeric:
+        cols = stlt.columns(min(len(numeric), 4))
+        for i, (k, v) in enumerate(numeric.items()):
+            cols[i % len(cols)].metric(k, f"{v:.4f}" if isinstance(v, float) else v)
+    if other:
+        stlt.json(other)
 
 
 
@@ -66,10 +94,7 @@ def render():
     with col2:
         if stlt.button("Show model info"):
             ok, data = call_api("GET", "/model", timeout=10)
-            if ok:
-                stlt.json(data)
-            else:
-                stlt.error(data)
+            show_model_info(data) if ok else stlt.error(data)
 
     stlt.divider()
 
@@ -84,20 +109,28 @@ def render():
             designation = stlt.text_input("designation", EXAMPLE_RECORD["designation"])
             description = stlt.text_area("description", EXAMPLE_RECORD["description"])
             c1, c2 = stlt.columns(2)
-            productid = c1.number_input("productid", value=EXAMPLE_RECORD["productid"], step=1)
-            imageid = c2.number_input("imageid", value=EXAMPLE_RECORD["imageid"], step=1)
-            image_path = stlt.text_input("image_path (optional)", "")
+            productid = c1.text_input("productid (optional)", "")
+            imageid = c2.text_input("imageid (optional)", "")
+            image_path = stlt.text_input(
+                "image_path (optional)",
+                "",
+                help="Path as seen INSIDE the api container. Empty or unreadable = no image information.",
+            )
             submitted = stlt.form_submit_button("Predict")
         if submitted:
-            record = {
-                "designation": designation,
-                "description": description,
-                "productid": int(productid),
-                "imageid": int(imageid),
-                "image_path": image_path or None,
-            }
-            ok, data = call_api("POST", "/predict", json={"records": [record]})
-            show_predictions(data) if ok else stlt.error(data)
+            try:
+                record = {
+                    "designation": designation,
+                    "description": description,
+                    "productid": int(productid) if productid.strip() else None,
+                    "imageid": int(imageid) if imageid.strip() else None,
+                    "image_path": image_path.strip() or None,
+                }
+            except ValueError:
+                stlt.error("productid and imageid must be whole numbers (or empty).")
+            else:
+                ok, data = call_api("POST", "/predict", json={"records": [record]})
+                show_predictions(data) if ok else stlt.error(data)
 
     elif mode == "CSV batch":
         stlt.caption(
@@ -115,7 +148,7 @@ def render():
                 if ok:
                     show_predictions(data)
                     out = pd.concat(
-                        [sample.reset_index(drop=True), pd.DataFrame(data["results"])],
+                        [sample.reset_index(drop=True), to_df(data)],
                         axis=1,
                     )
                     stlt.download_button(
