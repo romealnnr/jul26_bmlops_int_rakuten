@@ -12,7 +12,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from src.config import ensure_dirs, settings, setup_logging
+from src.config import ensure_dirs, setup_logging
 from src.data.db import init_db, ping
 from src.models import predict as predict_module
 from src.models.predict import ModelNotFoundError
