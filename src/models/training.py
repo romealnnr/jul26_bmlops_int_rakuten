@@ -1,4 +1,4 @@
-"""Entraînement et évaluation du modèle baseline Rakuten, avec suivi MLflow."""
+"""Training and evaluation of the Rakuten baseline model, with MLflow tracking."""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +9,6 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
-import joblib
 import mlflow
 import mlflow.sklearn
 from mlflow.tracking import MlflowClient
@@ -35,7 +34,7 @@ from src.features.build_features import (
 
 logger = logging.getLogger(__name__)
 
-PRIMARY_METRIC = "weighted_f1"  # métrique utilisée pour départager les modèles (cf. OBJECTIVES.md)
+PRIMARY_METRIC = "weighted_f1"  # metric used to differentiate the models (cf. OBJECTIVES.md)
 
 
 def build_pipeline(feature_names: list[str], random_state: int) -> Pipeline:
@@ -70,8 +69,8 @@ def evaluate(pipeline: Pipeline, X_test, y_test) -> dict[str, Any]:
 
 
 def _dataset_fingerprint() -> str:
-    """Empreinte des fichiers sources bruts : trace quelle version des données a
-    produit quel modèle (versioning minimal des données, sans outil dédié)."""
+    """Fingerprint of the raw source files: tracks which version of the data produced
+        which model (minimal data versioning, without a dedicated tool)."""
     hasher = hashlib.sha256()
     for filename in ("X_train_update.csv", "Y_train_CVw08PX.csv"):
         path = RAW_DATA_DIR / filename
@@ -86,7 +85,7 @@ def _setup_mlflow() -> None:
 
 
 def _get_production_version(client: MlflowClient, model_name: str):
-    """Retourne (version, metrics) du modèle actuellement en Production, ou (None, None)."""
+    """Returns (version, metrics) of the model currently in Production, or (None, None)."""
     try:
         versions = client.get_latest_versions(model_name, stages=["Production"])
     except Exception:
@@ -106,15 +105,15 @@ def _compare_and_promote(
     new_version: str,
     new_metrics: dict[str, Any],
 ) -> dict[str, Any]:
-    """Charge la version Production actuelle, la compare au nouveau modèle sur
-    PRIMARY_METRIC, et promeut/rétrograde en conséquence. Tag 'best_model' posé
-    sur chaque version pour une lecture rapide sans interroger les stages."""
+    """Loads the current Production version, compares it to the new model on 
+    PRIMARY_METRIC, and promotes/demotes accordingly. 
+    A 'best_model' tag is set on each version for quick reading without querying the stages."""
     prev_version, prev_metrics = _get_production_version(client, model_name)
     new_score = new_metrics[PRIMARY_METRIC]
     prev_score = prev_metrics.get(PRIMARY_METRIC) if prev_metrics else None
 
     if prev_version is None:
-        decision, reason, is_best = "promoted", "Aucun modèle en Production : première promotion.", True
+        decision, reason, is_best = "promoted", "No model in Production: first promotion.", True
     elif new_score > prev_score:
         decision = "promoted"
         reason = f"Nouveau {PRIMARY_METRIC}={new_score:.4f} > précédent {prev_score:.4f}."
@@ -127,8 +126,8 @@ def _compare_and_promote(
     client.set_model_version_tag(model_name, new_version, "best_model", "true" if is_best else "false")
     client.set_model_version_tag(model_name, new_version, PRIMARY_METRIC, str(new_score))
 
-    # transition_model_version_stage est marqué "legacy" dans les versions récentes
-    # de MLflow (remplacé par les alias) mais reste fonctionnel et largement utilisé.
+    # transition_model_version_stage is marked as “legacy” in recent MLflow versions
+    # (replaced by aliases) but remains functional and widely used.
     if is_best:
         client.transition_model_version_stage(
             name=model_name, version=new_version, stage="Production", archive_existing_versions=True,
@@ -170,7 +169,7 @@ def _get_cursor(session, pipeline_name: str = CONTINUOUS_PIPELINE_NAME) -> int:
 
 
 def _update_cursor(session, new_id: int, pipeline_name: str = CONTINUOUS_PIPELINE_NAME) -> None:
-    """Met à jour last_processed_id après un entraînement réussi."""
+    """Updates last_processed_id after a successful training."""
     from datetime import datetime, timezone
 
     from src.data.db import PipelineCursor
@@ -190,9 +189,9 @@ def train(
     limit: int | None = None,
     continuous: bool = False,
 ) -> dict[str, Any]:
-    """Entraîne le modèle Rakuten, le journalise dans MLflow (Tracking + Registry),
-    le compare à la version Production actuelle, et persiste l'artefact local
-    (compatibilité avec predict.py)."""
+    """Trains the Rakuten model, logs it in MLflow (Tracking + Registry), 
+    compares it to the current Production version, 
+    and persists the local artifact (compatibility with predict.py)."""
     ensure_dirs()
     _setup_mlflow()
 
@@ -209,7 +208,7 @@ def train(
         df = load_dataframe(limit=CONTINUOUS_BATCH_SIZE, min_id=min_id)
         batch_max_id = int(df["_id"].max())
         logger.info(
-            "Mode continu : tranche (id > %d), %d lignes chargées, max id = %d",
+            "Continuous mode: batch (id > %d), %d loaded rows, max id = %d",
             min_id, len(df), batch_max_id,
         )
     else:
@@ -219,7 +218,7 @@ def train(
     X, y = split_xy(df)
     X_train, X_test, y_train, y_test = split_train_test(X, y, test_size, random_state)
 
-    logger.info("Entraînement sur %d lignes (%d en test)", len(X_train), len(X_test))
+    logger.info("Training on %d line (%d en test)", len(X_train), len(X_test))
 
     with mlflow.start_run() as run:
         pipeline = build_pipeline(feature_names, random_state)
@@ -263,7 +262,7 @@ def train(
         )
         run_id = run.info.run_id
 
-    # Enregistrement dans le Model Registry (hors du bloc `with`, run déjà clos)
+    # Registration in the Model Registry (outside the with block, run already closed)
     registered = mlflow.register_model(model_uri=f"runs:/{run_id}/model", name=settings.mlflow_registered_model_name)
     new_model_version = registered.version
 
@@ -278,28 +277,21 @@ def train(
             _update_cursor(session, batch_max_id)
         logger.info("Curseur mis à jour : last_processed_id = %d", batch_max_id)
 
-    # Persistance locale : predict.py continue de fonctionner sans modification
-    artifact = {
-        "pipeline": pipeline,
-        "feature_names": feature_names,
-        "model_name": settings.model_name,
-        "version": version,
-        "trained_at": datetime.now(UTC).isoformat(),
-        "n_train": int(len(X_train)),
-        "n_test": int(len(X_test)),
-        "metrics": metrics,
-        "mlflow_run_id": run_id,
-        "mlflow_model_version": new_model_version,
-    }
-    joblib.dump(artifact, settings.model_path)
-    logger.info("Modèle enregistré (local) : %s", settings.model_path)
+    # NOTE : The model is no longer persisted locally as a .joblib file. predict.py
+    # now always loads the “Production” version from the MLflow Model
+    # Registry, which ensures that a model rejected by _compare_and_promote
+    # (above) can never be served by mistake — before this fix, each training
+    # run overwrote the local file, even when the model was rejected.
+    trained_at = datetime.now(UTC).isoformat()
+    n_train = int(len(X_train))
+    n_test = int(len(X_test))
 
     summary = {
         "model_name": settings.model_name,
         "version": version,
-        "trained_at": artifact["trained_at"],
-        "n_train": artifact["n_train"],
-        "n_test": artifact["n_test"],
+        "trained_at": trained_at,
+        "n_train": n_train,
+        "n_test": n_test,
         "n_features": len(feature_names),
         "metrics": metrics,
         "mlflow_run_id": run_id,
@@ -319,15 +311,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Entraînement du modèle Rakuten")
     parser.add_argument("--test-size", type=float, default=None)
     parser.add_argument("--random-state", type=int, default=None)
-    parser.add_argument("--limit", type=int, default=None, help="Limiter à N lignes (test rapide)")
+    parser.add_argument("--limit", type=int, default=None, help="Limit to N rows (quick test)")
     parser.add_argument(
         "--continuous",
         action="store_true",
-        help="Mode versioning continu : traite les 3000 prochaines lignes depuis le curseur pipeline_cursor",
+        help="Continuous versioning mode: processes the next 3000 rows from the pipeline_cursor",
     )
     args = parser.parse_args()
 
-    limit = args.limit if args.limit else None  # 0 ou None → pas de limite
+    limit = args.limit if args.limit else None  # 0 ou None → no limit
 
     setup_logging()
     train(test_size=args.test_size, random_state=args.random_state, limit=limit, continuous=args.continuous)
