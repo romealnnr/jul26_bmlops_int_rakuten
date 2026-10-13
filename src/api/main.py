@@ -100,8 +100,12 @@ class PredictResponse(BaseModel):
 # --------------------------------------------------------------------------- endpoints
 @app.get("/health", tags=["monitoring"])
 def health() -> dict[str, Any]:
-    """État de l'API, de la base et du modèle."""
-    model_available = settings.model_path.exists()
+    """État de l'API, de la base et du modèle (vérifié via le MLflow Model Registry)."""
+    try:
+        predict_module.model_info()
+        model_available = True
+    except ModelNotFoundError:
+        model_available = False
     return {
         "status": "ok",
         "database": "up" if ping() else "down",

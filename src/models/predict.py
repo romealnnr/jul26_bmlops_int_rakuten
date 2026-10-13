@@ -10,15 +10,17 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from datetime import timezone, datetime as dt
 from pathlib import Path
 from typing import Any
 
-import joblib
 import mlflow
+import mlflow.sklearn
 import pandas as pd
+from mlflow.tracking import MlflowClient
 from src.config import settings, setup_logging
 from src.data.db import Prediction, get_session
-from src.features.build_features import load_dataframe, prepare_frame
+from src.features.build_features import get_feature_columns, load_dataframe, prepare_frame
 
 logger = logging.getLogger(__name__)
 
@@ -28,24 +30,48 @@ FLAG_THRESHOLD = 0.6  # en dessous de ce score de confiance, la prédiction est 
 
 
 class ModelNotFoundError(RuntimeError):
-    """Aucun modèle entraîné n'est disponible."""
+    """Aucun modèle en Production n'est disponible dans le MLflow Model Registry."""
 
 
 def load_artifact(force_reload: bool = False) -> dict[str, Any]:
-    """Charge l'artefact depuis le disque, avec cache mémoire."""
+    """Charge le modèle actuellement en Production depuis le MLflow Model Registry,
+    avec cache mémoire. Contrairement à un fichier local, ceci garantit que l'API
+    sert toujours exactement le modèle que MLflow considère comme Production —
+    jamais un modèle rejeté par _compare_and_promote lors d'un entraînement."""
     global _ARTIFACT
 
     if _ARTIFACT is not None and not force_reload:
         return _ARTIFACT
 
-    if not settings.model_path.exists():
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    client = MlflowClient()
+
+    versions = client.get_latest_versions(settings.mlflow_registered_model_name, stages=["Production"])
+    if not versions:
         raise ModelNotFoundError(
-            f"Modèle introuvable ({settings.model_path}). "
+            f"Aucun modèle en Production pour '{settings.mlflow_registered_model_name}'. "
             "Lancez d'abord : python -m src.models.training"
         )
 
-    _ARTIFACT = joblib.load(settings.model_path)
-    logger.info("Modèle chargé (version %s)", _ARTIFACT["version"])
+    version_info = versions[0]
+    run = client.get_run(version_info.run_id)
+    model_uri = f"models:/{settings.mlflow_registered_model_name}/Production"
+    pipeline = mlflow.sklearn.load_model(model_uri)
+
+    _ARTIFACT = {
+        "pipeline": pipeline,
+        "model_name": run.data.params.get("model_name", settings.model_name),
+        "version": run.data.tags.get("version", str(version_info.version)),
+        "mlflow_model_version": str(version_info.version),
+        "mlflow_run_id": version_info.run_id,
+        "trained_at": dt.fromtimestamp(run.info.start_time / 1000, tz=timezone.utc).isoformat(),
+        "feature_names": get_feature_columns(None),
+        "metrics": dict(run.data.metrics),
+    }
+    logger.info(
+        "Modèle chargé depuis MLflow Model Registry (version %s, run %s)",
+        version_info.version, version_info.run_id,
+    )
     return _ARTIFACT
 
 

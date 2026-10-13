@@ -1,6 +1,6 @@
-"""Calcul du data drift entre la toute première tranche de données (baseline
-fixe) et un batch donné, via Evidently. Résultats persistés en base pour
-être visualisés dans Grafana."""
+"""Computes the data drift between the very first data slice (fixed baseline) and 
+a given batch, using Evidently. Results are stored in the database 
+to be visualized in Grafana."""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ from src.data.db import DriftMetric, RawSample, get_session
 
 logger = logging.getLogger(__name__)
 
-BASELINE_MAX_ID = 3000  # la toute première tranche sert de référence fixe
-DRIFT_WINDOW = 3000  # taille du batch "current" à comparer
+BASELINE_MAX_ID = 3000  # the very first slice serves as a fixed reference
+DRIFT_WINDOW = 3000  # size of the “current” batch to compare
 
 
 def _load_batch(session, min_id: int, max_id: int) -> pd.DataFrame:
@@ -24,12 +24,25 @@ def _load_batch(session, min_id: int, max_id: int) -> pd.DataFrame:
         select(RawSample.features, RawSample.target)
         .where(RawSample.id > min_id, RawSample.id <= max_id)
     ).all()
-    return pd.DataFrame([{**features, "target": target} for features, target in rows])
+    df = pd.DataFrame([{**features, "target": target} for features, target in rows])
+
+    # Type coercion, consistent with split_xy() in build_features.py: without this,
+    # Evidently may incorrectly infer a column’s type (text vs numeric) if the
+    # types are inconsistent between reference and current (e.g., productid as str
+    # in one batch and int in the other), which causes the text‑drift computation to fail.
+    for col in ("designation", "description"):
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype(str)
+    for col in ("productid", "imageid"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df
 
 
 def compute_drift(current_max_id: int) -> dict:
-    """Compare la baseline (id <= BASELINE_MAX_ID) au batch se terminant à
-    current_max_id, et persiste chaque métrique de colonne en base."""
+    """Compares the baseline (id ≤ BASELINE_MAX_ID) with the batch ending at
+        current_max_id, and persists each column metric in the database."""
     current_min_id = max(current_max_id - DRIFT_WINDOW, BASELINE_MAX_ID)
 
     with get_session() as session:
@@ -39,8 +52,8 @@ def compute_drift(current_max_id: int) -> dict:
     if reference.empty or current.empty:
         raise RuntimeError("Pas assez de données pour calculer le drift.")
 
-    # Les colonnes non pertinentes pour le drift statistique sont retirées
-    # (chemins de fichiers, identifiants techniques sans signification métier).
+    # Columns that are irrelevant for statistical drift are removed
+    # (file paths, technical identifiers with no business meaning).
     drop_cols = [c for c in ("image_path",) if c in reference.columns]
     reference = reference.drop(columns=drop_cols, errors="ignore")
     current = current.drop(columns=drop_cols, errors="ignore")
@@ -57,7 +70,7 @@ def compute_drift(current_max_id: int) -> dict:
         for metric in result["metrics"]:
             config = metric.get("config", {})
             if config.get("type") != "evidently:metric_v2:ValueDrift":
-                continue  # on ne garde que le drift par colonne, pas l'agrégat global
+                continue  # only the per‑column drift is kept, not the global aggregate
 
             column_name = config.get("column", "unknown")
             method = config.get("method", "unknown")
