@@ -1,0 +1,38 @@
+# Proposed replacement for datasources.yml.
+#
+# One change, in two places: the database name and the username stop being
+# literals and start being the same variables Postgres itself is created
+# from. A literal credential in a provisioning file works on exactly one
+# machine - the one belonging to whoever wrote it - and fails everywhere else
+# without saying so.
+#
+# This file needs the companion change in docker-compose.monitoring.yml:
+# Grafana expands $VAR from its own container's environment, and today only
+# POSTGRES_PASSWORD is passed in. Applied alone, this file resolves the
+# username to an empty string and the symptom is identical to the bug it
+# fixes.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus_ds
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+
+  - name: PostgreSQL
+    uid: postgres_ds
+    type: postgres
+    access: proxy
+    url: db:5432
+    # Was: database: mlops / user: romealnnr
+    database: $POSTGRES_DB
+    user: $POSTGRES_USER
+    secureJsonData:
+      password: $POSTGRES_PASSWORD
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
