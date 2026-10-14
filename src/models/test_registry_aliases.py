@@ -8,6 +8,8 @@ import os
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+import numpy as np
+import pandas as pd
 import pytest
 from mlflow.exceptions import MlflowException
 from mlflow.protos import databricks_pb2
@@ -75,16 +77,27 @@ class FakeClient:
         self.tags[(str(version), key)] = value
 
     def get_run(self, run_id):
-        return SimpleNamespace(data=SimpleNamespace(metrics=self.metrics))
+        # window_max_id=0: every test row below is unseen by the champion (point 21 gate).
+        return SimpleNamespace(
+            data=SimpleNamespace(metrics=self.metrics, params={"window_max_id": "0"})
+        )
 
 
-Y_TEST = [10, 20, 30]
+# 200 test rows, ids 1..200. The challenger predicts every row right; the champion
+# gets them all right (worse challenger case) or only half of them (better case).
+Y_TEST = np.array([10, 20] * 100)
+X_TEST = pd.DataFrame({"designation": ["x"] * len(Y_TEST)})
+TEST_IDS = np.arange(1, len(Y_TEST) + 1)
 
 
-def _promote(client, new_version, new_score, champion_score, monkeypatch):
-    monkeypatch.setattr(training, "_score_champion_on", lambda *a, **k: champion_score)
+def _promote(client, new_version, new_score, champion_better, monkeypatch):
+    """champion_better: None (no champion scored), True or False."""
+    champion_pred = Y_TEST if champion_better else np.full(len(Y_TEST), 10)
+    challenger_pred = np.full(len(Y_TEST), 10) if champion_better else Y_TEST
+    monkeypatch.setattr(training, "_score_champion_on", lambda *a, **k: champion_pred)
     return training._compare_and_promote(
-        client, MODEL, new_version, {training.PRIMARY_METRIC: new_score}, None, Y_TEST
+        client, MODEL, new_version, {training.PRIMARY_METRIC: new_score},
+        X_TEST, Y_TEST, challenger_pred, TEST_IDS,
     )
 
 
@@ -99,7 +112,7 @@ def test_first_training_sets_champion_alias_and_writes_no_stage(monkeypatch):
 
 def test_better_model_moves_champion(monkeypatch):
     client = FakeClient(champion=3, metrics={"weighted_f1": 0.6})
-    result = _promote(client, "4", 0.8, 0.6, monkeypatch)
+    result = _promote(client, "4", 0.8, False, monkeypatch)
     assert result["decision"] == "promoted"
     assert client.aliases[training.CHAMPION_ALIAS] == "4"
     assert client.stage_writes == []
@@ -107,7 +120,7 @@ def test_better_model_moves_champion(monkeypatch):
 
 def test_worse_model_becomes_challenger_and_champion_stays(monkeypatch):
     client = FakeClient(champion=3, metrics={"weighted_f1": 0.8})
-    result = _promote(client, "4", 0.5, 0.8, monkeypatch)
+    result = _promote(client, "4", 0.5, True, monkeypatch)
     assert result["decision"] == "rejected"
     assert client.aliases[training.CHAMPION_ALIAS] == "3"
     assert client.aliases[training.CHALLENGER_ALIAS] == "4"
@@ -116,14 +129,15 @@ def test_worse_model_becomes_challenger_and_champion_stays(monkeypatch):
 
 def test_legacy_production_version_is_migrated_to_champion():
     client = FakeClient(production=5, metrics={"weighted_f1": 0.7})
-    version, metrics = training._get_champion_version(client, MODEL)
+    version, metrics, params = training._get_champion_version(client, MODEL)
     assert version == "5"
     assert metrics == {"weighted_f1": 0.7}
+    assert params == {"window_max_id": "0"}
     assert client.aliases[training.CHAMPION_ALIAS] == "5"
 
 
 def test_no_champion_and_no_legacy_version():
-    assert training._get_champion_version(FakeClient(), MODEL) == (None, None)
+    assert training._get_champion_version(FakeClient(), MODEL) == (None, None, None)
 
 
 def test_continuous_training_returns_no_new_data_when_exhausted(monkeypatch):

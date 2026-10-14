@@ -298,6 +298,31 @@ docker compose up -d --build (not just docker compose build).
 * Obtained result (full dataset, text + image):
     accuracy ≈ 0.822, weighted_f1 ≈ 0.824
 
+### Promotion gate (when a new model replaces @champion)
+
+A new model is promoted only when it is better on the same rows, by more than noise.
+Both models predict the current test rows whose id is above the @champion model's
+training window (run param `window_max_id`), so the champion is never graded on rows it
+trained on. A paired bootstrap over those rows gives the weighted-F1 gain with a 95%
+interval; the new model is promoted only if the lower bound is above 0 AND the gain is at
+least `PROMOTION_MIN_GAIN`. Otherwise it gets the @challenger alias and the reason is in the
+`/training` response (`comparison`) and in the version tags (`comparison_basis`,
+`promotion_min_gain`, `promotion_gain`, `promotion_ci_low`, `promotion_ci_high`).
+An invalid value of one of the keys below makes `/training` fail before it trains.
+
+Optional `.env` keys (defaults in brackets): `PROMOTION_MIN_GAIN` [0.005],
+`PROMOTION_BOOTSTRAP` [1000], `PROMOTION_BOOTSTRAP_SEED` [42], `PROMOTION_FIRST_MIN_F1`
+[0.2, floor for the very first model], `PROMOTION_MIN_ROWS` [100].
+
+No automatic promotion when the comparison cannot be made: `comparison_basis` is then
+`champion_window_unknown` (@champion model trained before this gate, no `window_max_id`),
+`too_few_unseen_rows` (the champion has seen almost every row, e.g. a full-data run) or
+`champion_not_scorable`. Promote by hand after checking the run:
+
+```bash
+docker compose exec api python -c "from mlflow import MlflowClient; MlflowClient().set_registered_model_alias('<MLFLOW_REGISTERED_MODEL_NAME>', 'champion', '<version>')"
+```
+
 ## 10. Pipeline architecture
 
 ```
