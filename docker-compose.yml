@@ -94,12 +94,20 @@ services:
         condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
-    environment: *airflow-env
+    environment:
+      <<: *airflow-env
+      # Fixed web login from .env (AIRFLOW_ADMIN_USER / AIRFLOW_ADMIN_PASSWORD).
+      # scripts/airflow_apiserver.sh writes the passwords file, then starts the server.
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "${AIRFLOW_ADMIN_USER:-admin}:admin"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/simple_auth_manager_passwords.json
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-admin}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-}
     user: "${AIRFLOW_UID}:0"
-    command: api-server
+    command: ["bash", "/opt/airflow/scripts/airflow_apiserver.sh"]
     ports:
       - "8081:8080"
     volumes:
+      - ./scripts/airflow_apiserver.sh:/opt/airflow/scripts/airflow_apiserver.sh:ro
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins

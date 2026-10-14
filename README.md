@@ -95,6 +95,9 @@ MLFLOW_REGISTERED_MODEL_NAME=rakuten_baseline
 AIRFLOW_UID=1000
 AIRFLOW_FERNET_KEY=<create a key>
 AIRFLOW_JWT_SECRET=<create a key>
+# Airflow web login (http://localhost:8081)
+AIRFLOW_ADMIN_USER=admin
+AIRFLOW_ADMIN_PASSWORD=<choose a password>
 ```
 
 > ⚠️ **Important** : "POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB" 
