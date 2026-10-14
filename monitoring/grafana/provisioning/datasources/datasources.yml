@@ -13,8 +13,17 @@ datasources:
     type: postgres
     access: proxy
     url: db:5432
-    database: mlops
-    user: ${POSTGRES_USER}
+    # The database and the credentials all come from the same variables the
+    # database itself is created from, so the two cannot drift apart. A
+    # literal value here works on exactly one machine: the author's, and the
+    # failure elsewhere is silent - Grafana starts, the datasource appears,
+    # and only the SQL panels come back empty.
+    #
+    # Grafana expands $VAR from its own container's environment. The three
+    # variables are passed to the grafana service in
+    # docker-compose.monitoring.yml.
+    database: $POSTGRES_DB
+    user: $POSTGRES_USER
     secureJsonData:
       password: $POSTGRES_PASSWORD
     jsonData:

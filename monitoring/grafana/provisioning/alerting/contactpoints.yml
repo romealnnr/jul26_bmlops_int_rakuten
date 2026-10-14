@@ -1,0 +1,29 @@
+# Contact points, provisioned as a file.
+#
+# Until now this stack defined alerts and nothing that listened to them. The
+# brief asks for the loop to be closed: "Training trigger: use the built-in
+# Grafana webhook". This is that webhook.
+#
+# It posts to a dedicated endpoint rather than to /training. Grafana sends its
+# own alert payload, which says nothing about how to train; posting it to
+# /training would be read as "all fields default", meaning a full retrain on
+# every row - over an hour - each time the alert fires. /training/trigger
+# fixes that decision in code instead of hoping a foreign body parses into
+# something sensible.
+#
+# `disableResolveMessage: true` because a resolved alert means the drift
+# dropped back under the threshold. That is good news, and good news should
+# not start a training run.
+
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: rakuten-retrain
+    receivers:
+      - uid: rakuten-retrain-webhook
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: http://api:8000/training/trigger
+          httpMethod: POST
