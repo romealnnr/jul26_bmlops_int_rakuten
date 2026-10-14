@@ -34,17 +34,28 @@ def load_dataframe_sample(max_id: int, limit: int) -> pd.DataFrame:
     tout ce qu'un modèle précédent savait des batchs antérieurs (catastrophic
     forgetting). Retourne au plus `limit` lignes (moins si l'historique est plus
     petit que `limit`, par exemple lors des tout premiers cycles)."""
-    from sqlalchemy import func
-
-    stmt = (
-        select(RawSample.id, RawSample.features, RawSample.target)
-        .where(RawSample.id <= max_id)
-        .order_by(func.random())
-        .limit(limit)
-    )
+    import numpy as np
 
     with get_session() as session:
-        rows = session.execute(stmt).all()
+        ids = session.execute(
+            select(RawSample.id).where(RawSample.id <= max_id)
+        ).scalars().all()
+
+    if not ids:
+        return pd.DataFrame()
+
+    # Seeded draw (settings.random_state + max_id) rather than ORDER BY random():
+    # makes the exact same training window reproducible for a given cursor
+    # position, instead of a different random sample every time the same
+    # cycle is re-run.
+    rng = np.random.default_rng([settings.random_state, max_id])
+    drawn_ids = sorted(rng.choice(ids, size=min(limit, len(ids)), replace=False).tolist())
+
+    with get_session() as session:
+        rows = session.execute(
+            select(RawSample.id, RawSample.features, RawSample.target)
+            .where(RawSample.id.in_(drawn_ids))
+        ).all()
 
     if not rows:
         return pd.DataFrame()

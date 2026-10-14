@@ -11,6 +11,7 @@ from evidently import Report
 from evidently.presets import DataDriftPreset
 from sqlalchemy import desc, select
 
+from src.config import settings
 from src.data.db import DriftMetric, Prediction, RawSample, get_session
 
 logger = logging.getLogger(__name__)
@@ -79,11 +80,12 @@ def compute_drift(current_max_id: int) -> dict:
 
     if reference.empty:
         raise RuntimeError("Pas assez de données d'entraînement pour calculer le drift.")
-    if current.empty:
-        raise RuntimeError(
-            "Aucune prédiction réelle enregistrée dans la table `predictions` : "
-            "impossible de calculer le drift tant que /predict n'a jamais été appelé."
-        )
+
+    min_predictions = min(settings.drift_min_predictions, PREDICTION_WINDOW)
+    if len(current) < min_predictions:
+        reason = f"not enough requests yet ({len(current)}/{min_predictions})"
+        logger.info("Drift skipped: %s", reason)
+        return {"status": "skipped", "reason": reason, "metrics": []}
 
     # Only compare columns that exist on both sides (predictions has no "target").
     shared_cols = [c for c in FEATURE_COLUMNS if c in reference.columns and c in current.columns]
