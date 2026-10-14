@@ -105,11 +105,15 @@ airflow-webserver.pid
 venv/
 
 # --- Modèle entraîné et rapports (générés, pas du code) ---
-/models/
-/reports/
+# Contents ignored, folder kept (tracked .gitkeep) so a fresh clone has it.
+/models/*
+!/models/.gitkeep
+/reports/*
+!/reports/.gitkeep
 
 # --- MLflow (artefacts locaux, pas le backend Postgres) ---
-/mlruns/
+/mlruns/*
+!/mlruns/.gitkeep
 
 # --- Miniconda installer (traîne à la racine) ---
 Miniconda3-latest-Linux-x86_64.sh*
