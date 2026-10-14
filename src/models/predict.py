@@ -25,6 +25,7 @@ from src.config import RAW_DATA_DIR, settings, setup_logging
 from src.data.db import Prediction, get_session
 from src.features.build_features import get_feature_columns, load_dataframe, prepare_frame
 from src.models.categories import category_name
+from src.models.registry_errors import is_not_found
 
 logger = logging.getLogger(__name__)
 
@@ -33,15 +34,39 @@ _ARTIFACT: dict[str, Any] | None = None
 FLAG_THRESHOLD = 0.6  # en dessous de ce score de confiance, la prédiction est flaggée
 
 
+CHAMPION_ALIAS = "champion"  # same alias as src.models.training.CHAMPION_ALIAS
+
+
 class ModelNotFoundError(RuntimeError):
-    """Aucun modèle en Production n'est disponible dans le MLflow Model Registry."""
+    """Aucun modèle @champion n'est disponible dans le MLflow Model Registry."""
+
+
+def _champion_version(client: MlflowClient, model_name: str):
+    """Registry version behind the @champion alias.
+
+    Read-only fallback for a registry created before the alias change: the
+    latest version still in the legacy "Production" stage is served until the
+    next training run sets the alias. Returns None when neither exists.
+    Any other registry error (unreachable, server error) is raised, so /health
+    reports it instead of claiming that no model exists."""
+    try:
+        return client.get_model_version_by_alias(model_name, CHAMPION_ALIAS)
+    except Exception as exc:
+        if not is_not_found(exc):
+            raise
+    legacy = [
+        v
+        for v in client.search_model_versions(f"name='{model_name}'")
+        if v.current_stage == "Production"
+    ]
+    return max(legacy, key=lambda v: int(v.version)) if legacy else None
 
 
 def load_artifact(force_reload: bool = False) -> dict[str, Any]:
-    """Charge le modèle actuellement en Production depuis le MLflow Model Registry,
-    avec cache mémoire. Contrairement à un fichier local, ceci garantit que l'API
-    sert toujours exactement le modèle que MLflow considère comme Production —
-    jamais un modèle rejeté par _compare_and_promote lors d'un entraînement."""
+    """Charge le modèle @champion depuis le MLflow Model Registry, avec cache
+    mémoire. Contrairement à un fichier local, ceci garantit que l'API sert
+    toujours exactement le modèle promu par _compare_and_promote, jamais un
+    modèle rejeté (@challenger) lors d'un entraînement."""
     global _ARTIFACT
 
     if _ARTIFACT is not None and not force_reload:
@@ -50,17 +75,17 @@ def load_artifact(force_reload: bool = False) -> dict[str, Any]:
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
     client = MlflowClient()
 
-    versions = client.get_latest_versions(settings.mlflow_registered_model_name,
-                                          stages=["Production"])
-    if not versions:
+    model_name = settings.mlflow_registered_model_name
+    version_info = _champion_version(client, model_name)
+    if version_info is None:
         raise ModelNotFoundError(
-            f"Aucun modèle en Production pour '{settings.mlflow_registered_model_name}'. "
+            f"Aucun modèle @{CHAMPION_ALIAS} pour '{model_name}'. "
             "Lancez d'abord : python -m src.models.training"
         )
 
-    version_info = versions[0]
     run = client.get_run(version_info.run_id)
-    model_uri = f"models:/{settings.mlflow_registered_model_name}/Production"
+    # Pinned to the resolved version, so the metadata and the weights always match.
+    model_uri = f"models:/{model_name}/{version_info.version}"
     pipeline = mlflow.sklearn.load_model(model_uri)
 
     _ARTIFACT = {

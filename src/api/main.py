@@ -99,6 +99,9 @@ def _record_training(**kwargs: Any) -> dict[str, Any]:
         mon.TRAINING_IN_PROGRESS.set(0)
         mon.TRAINING_DURATION.observe(time.perf_counter() - started)
 
+    if summary.get("status") == "no_new_data":
+        # Nothing was trained: the served model and the gauges stay as they are.
+        return summary
     mon.TRAINING_RUNS.labels(outcome="succeeded").inc()
     predict_module.load_artifact(force_reload=True)
     _refresh_model_metrics()
@@ -171,14 +174,19 @@ class TrainingRequest(BaseModel):
 
 
 class TrainingResponse(BaseModel):
+    # status "trained": every field is filled. status "no_new_data" (continuous mode,
+    # every row already consumed): only status, detail and cursor are set.
     status: str
-    model_name: str
-    version: str
-    trained_at: str
-    n_train: int
-    n_test: int
-    n_features: int
-    metrics: dict[str, Any]
+    detail: str | None = None
+    cursor: int | None = None
+    model_name: str | None = None
+    version: str | None = None  # MLflow registry version number
+    version_tag: str | None = None  # training timestamp tag of the run (YYYYmmddHHMMSS)
+    trained_at: str | None = None
+    n_train: int | None = None
+    n_test: int | None = None
+    n_features: int | None = None
+    metrics: dict[str, Any] | None = None
     mlflow_run_id: str | None = None
     mlflow_model_version: str | None = None
     comparison: dict[str, Any] | None = None
@@ -269,6 +277,8 @@ async def run_training(request: TrainingRequest) -> TrainingResponse:
         logger.exception("Échec de l'entraînement")
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
+    if summary.get("status") == "no_new_data":
+        return TrainingResponse(**summary)
     return TrainingResponse(status="trained", **summary)
 
 
