@@ -1,3 +1,6 @@
-streamlit
-requests
-pandas
+# Exact pins (point 25): versions of the running Streamlit image (Python 3.11),
+# pip freeze 2026-10-13. numpy 2.5 needs Python >= 3.12, so this image stays on 2.4.6.
+streamlit==1.65.0
+requests==2.34.2
+pandas==3.0.6
+numpy==2.4.6

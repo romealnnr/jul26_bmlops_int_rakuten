@@ -1,19 +1,31 @@
-fastapi>=0.115,<1.0
-uvicorn[standard]>=0.32,<1.0
-pydantic>=2.9,<3.0
-pydantic-settings>=2.6,<3.0
-sqlalchemy>=2.0,<3.0
-psycopg[binary]>=3.2,<4.0
-pandas>=2.2,<3.0
-numpy>=1.26,<3.0
-scikit-learn>=1.5,<2.0
-joblib>=1.4,<2.0
-python-dotenv>=1.0,<2.0
-pillow
-mlflow
+# Exact pins (point 25). These are the versions the stack was built and tested with
+# (pip freeze of the running API image, 2026-10-13); the logged MLflow models were
+# pickled with scikit-learn 1.9.1, numpy 2.5.4, pandas 2.3.3, scipy 1.18.1 and
+# cloudpickle 3.1.2, so serving must use the same versions to load them safely.
+# Newer releases exist for some packages (e.g. pandas 3.x); upgrade deliberately,
+# retrain and re-test rather than letting a rebuild drift.
+fastapi==0.143.0
+uvicorn[standard]==0.54.0
+pydantic==2.14.1
+pydantic-settings==2.15.0
+sqlalchemy==2.1.4
+psycopg[binary]==3.3.6
+pandas==2.3.3
+numpy==2.5.4
+scikit-learn==1.9.1
+scipy==1.18.1
+cloudpickle==3.1.2
+joblib==1.6.0
+python-dotenv==1.2.4
+pillow==12.3.0
+mlflow==3.17.1
+evidently==0.7.23
+prometheus-fastapi-instrumentator==8.1.0
+prometheus-client==0.26.0
+requests==2.34.2
+PyYAML==6.0.3
 
+# CPU-only PyTorch wheels; the +cpu label stops pip from picking the CUDA build on PyPI.
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch
-torchvision
-evidently
-prometheus-fastapi-instrumentator
+torch==2.14.1+cpu
+torchvision==0.29.1+cpu

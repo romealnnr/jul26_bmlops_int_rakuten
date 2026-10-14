@@ -6,20 +6,21 @@ build-backend = "setuptools.build_meta"
 name = "jul26-bmlops"
 version = "0.1.0"
 description = "Phase 1 - baseline ML pipeline + inference API"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
+# Same exact pins as requirements.txt (point 25). numpy 2.5.4 needs Python >= 3.12.
 dependencies = [
-    "fastapi>=0.115,<1.0",
-    "uvicorn[standard]>=0.32,<1.0",
-    "pydantic>=2.9,<3.0",
-    "pydantic-settings>=2.6,<3.0",
-    "sqlalchemy>=2.0,<3.0",
-    "psycopg[binary]>=3.2,<4.0",
-    "pandas>=2.2,<3.0",
-    "numpy>=1.26,<3.0",
-    "scikit-learn>=1.5,<2.0",
-    "joblib>=1.4,<2.0",
-    "python-dotenv>=1.0,<2.0",
-    "mlflow>=3.16.1",
+    "fastapi==0.143.0",
+    "uvicorn[standard]==0.54.0",
+    "pydantic==2.14.1",
+    "pydantic-settings==2.15.0",
+    "sqlalchemy==2.1.4",
+    "psycopg[binary]==3.3.6",
+    "pandas==2.3.3",
+    "numpy==2.5.4",
+    "scikit-learn==1.9.1",
+    "joblib==1.6.0",
+    "python-dotenv==1.2.4",
+    "mlflow==3.17.1",
 ]
 
 [project.optional-dependencies]
