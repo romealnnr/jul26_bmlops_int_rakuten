@@ -15,6 +15,7 @@ DASHBOARDS = {
     "Airflow": {"url": os.getenv("AIRFLOW_URL", "http://localhost:8081"),  "embed": True},
     "FastAPI Docs": {"url": os.getenv("API_DOCS_URL", "http://localhost:8000/docs"), "embed": True},
     "DagsHub": {"url": os.getenv("DAGSHUB_URL", ""), "embed": False},
+    "MLflow": {"url": os.getenv("MLFLOW_URL", "http://localhost:5000"), "embed": True},
 }
 
 
