@@ -1,4 +1,9 @@
-"""Training and evaluation of the Rakuten baseline model, with MLflow tracking."""
+"""Training and evaluation of the Rakuten baseline model, with MLflow tracking.
+
+The model registry uses aliases, not the legacy stages (deprecated in MLflow 3):
+- @champion: the version the API serves (promoted);
+- @challenger: the latest version that was trained but rejected.
+"""
 from __future__ import annotations
 
 import argparse
@@ -31,9 +36,12 @@ from src.features.build_features import (
     split_train_test,
     split_xy,
 )
+from src.models.registry_errors import is_not_found
 
 logger = logging.getLogger(__name__)
 
+CHAMPION_ALIAS = "champion"  # registry alias of the model the API serves
+CHALLENGER_ALIAS = "challenger"  # registry alias of the latest rejected model
 PRIMARY_METRIC = "weighted_f1"  # metric used to differentiate the models (cf. OBJECTIVES.md)
 
 
@@ -93,23 +101,41 @@ def _setup_mlflow() -> None:
     mlflow.set_experiment(settings.mlflow_experiment_name)
 
 
-def _get_production_version(client: MlflowClient, model_name: str):
-    """Returns (version, metrics) of the model currently in Production, or (None, None)."""
+def _get_champion_version(client: MlflowClient, model_name: str):
+    """Return (version, metrics) of the model with the @champion alias, or (None, None).
+
+    One-time migration: if no alias exists yet but a version is still in the old
+    "Production" stage, the alias is set on that version. Stages are only read
+    here, never written.
+
+    Only "model or alias not found" means "no champion yet". Any other registry
+    error is raised: reading it as "no champion" would promote the new model
+    as if it were the first one."""
     try:
-        versions = client.get_latest_versions(model_name, stages=["Production"])
-    except Exception:
-        return None, None
+        version = client.get_model_version_by_alias(model_name, CHAMPION_ALIAS)
+    except Exception as exc:
+        if not is_not_found(exc):
+            raise
+        version = None
 
-    if not versions:
-        return None, None
+    if version is None:
+        legacy = [
+            v
+            for v in client.search_model_versions(f"name='{model_name}'")
+            if v.current_stage == "Production"
+        ]
+        if not legacy:
+            return None, None
+        version = max(legacy, key=lambda v: int(v.version))
+        client.set_registered_model_alias(model_name, CHAMPION_ALIAS, version.version)
+        logger.info("Migration: @%s set on Production version %s", CHAMPION_ALIAS, version.version)
 
-    version = versions[0]
     run = client.get_run(version.run_id)
-    return version.version, run.data.metrics
+    return str(version.version), run.data.metrics
 
 
 def _score_champion_on(model_name: str, X_test, y_test) -> float | None:
-    """Score the Production model on the test set the challenger was just judged on.
+    """Score the @champion model on the test set the challenger was just judged on.
 
     This is the whole point of the change. Every training run splits its own
     batch and reports a metric measured on its own test rows, so comparing a
@@ -126,7 +152,7 @@ def _score_champion_on(model_name: str, X_test, y_test) -> float | None:
     falls back to the stored metric and says so, rather than silently promoting.
     """
     try:
-        champion = mlflow.sklearn.load_model(f"models:/{model_name}/Production")
+        champion = mlflow.sklearn.load_model(f"models:/{model_name}@{CHAMPION_ALIAS}")
     except Exception as exc:  # noqa: BLE001
         logger.warning("Champion model could not be loaded for comparison: %s", exc)
         return None
@@ -172,9 +198,10 @@ def _compare_and_promote(
     oversight: in a setting where the past still matters, this test set is the
     first thing that should change.
 
-    A 'best_model' tag is set on each version for quick reading without
-    querying the stages."""
-    prev_version, prev_metrics = _get_production_version(client, model_name)
+    Promotion moves the registry aliases: @champion if promoted, @challenger if
+    rejected (legacy stages are no longer written). A 'best_model' tag is also
+    set on each version so the decision is visible in the MLflow UI."""
+    prev_version, prev_metrics = _get_champion_version(client, model_name)
     new_score = new_metrics[PRIMARY_METRIC]
 
     # What the champion reported when it was trained, kept only so the two
@@ -193,7 +220,7 @@ def _compare_and_promote(
             basis = "champion_logged_metric_fallback"
 
     if prev_version is None:
-        decision, reason, is_best = "promoted", "No model in Production: first promotion.", True
+        decision, reason, is_best = "promoted", "No @champion yet: first promotion.", True
     elif prev_score is None:
         decision = "promoted"
         reason = "Champion could not be evaluated and reported no stored metric."
@@ -220,19 +247,9 @@ def _compare_and_promote(
     client.set_model_version_tag(model_name, new_version, PRIMARY_METRIC, str(new_score))
     client.set_model_version_tag(model_name, new_version, "comparison_basis", basis)
 
-    # transition_model_version_stage is marked as “legacy” in recent MLflow versions
-    # (replaced by aliases) but remains functional and widely used.
-    if is_best:
-        client.transition_model_version_stage(
-            name=model_name, 
-            version=new_version, 
-            stage="Production", 
-            archive_existing_versions=True,
-        )
-    else:
-        client.transition_model_version_stage(
-            name=model_name, version=new_version, stage="Staging", archive_existing_versions=False,
-        )
+    # Promotion moves the @champion alias; the API serves whatever @champion points to.
+    alias = CHAMPION_ALIAS if is_best else CHALLENGER_ALIAS
+    client.set_registered_model_alias(model_name, alias, new_version)
 
     logger.info("Comparaison MLflow : %s (version %s) — %s", decision, new_version, reason)
 
@@ -249,6 +266,7 @@ def _compare_and_promote(
         "comparison_basis": basis,
         "evaluated_on_rows": int(len(y_test)),
         "metric": PRIMARY_METRIC,
+        "alias": alias,
     }
 
 
@@ -285,6 +303,25 @@ def _update_cursor(session, new_id: int, pipeline_name: str = CONTINUOUS_PIPELIN
     session.commit()
 
 
+def _has_rows_after(session, cursor: int) -> bool:
+    """Is there at least one raw_samples row after the cursor?"""
+    from sqlalchemy import select
+
+    from src.data.db import RawSample
+
+    return session.scalar(select(RawSample.id).where(RawSample.id > cursor).limit(1)) is not None
+
+
+def _no_new_data(cursor: int) -> dict[str, Any]:
+    """Result of a continuous run when every row has already been consumed."""
+    detail = (
+        f"No new rows after id {cursor} in raw_samples: nothing to train on. "
+        "The current @champion is kept."
+    )
+    logger.info(detail)
+    return {"status": "no_new_data", "detail": detail, "cursor": cursor}
+
+
 def train(
     test_size: float | None = None,
     random_state: int | None = None,
@@ -292,8 +329,11 @@ def train(
     continuous: bool = False,
 ) -> dict[str, Any]:
     """Trains the Rakuten model, logs it in MLflow (Tracking + Registry), 
-    compares it to the current Production version, 
-    and persists the local artifact (compatibility with predict.py)."""
+    compares it to the current @champion version
+    and moves the registry aliases.
+
+    In continuous mode, returns {"status": "no_new_data", ...} instead of raising
+    once the cursor has reached the end of the data, so the DAG can skip cleanly."""
     ensure_dirs()
     _setup_mlflow()
 
@@ -307,6 +347,9 @@ def train(
 
         with get_session() as session:
             min_id = _get_cursor(session)
+            has_rows = _has_rows_after(session, min_id)
+        if not has_rows:
+            return _no_new_data(min_id)
         df = load_dataframe(limit=CONTINUOUS_BATCH_SIZE, min_id=min_id)
         batch_max_id = int(df["_id"].max())
         logger.info(
@@ -384,7 +427,7 @@ def train(
         logger.info("Curseur mis à jour : last_processed_id = %d", batch_max_id)
 
     # NOTE : The model is no longer persisted locally as a .joblib file. predict.py
-    # now always loads the “Production” version from the MLflow Model
+    # now always loads the @champion version from the MLflow Model
     # Registry, which ensures that a model rejected by _compare_and_promote
     # (above) can never be served by mistake — before this fix, each training
     # run overwrote the local file, even when the model was rejected.
@@ -394,7 +437,10 @@ def train(
 
     summary = {
         "model_name": settings.model_name,
-        "version": version,
+        # Registry version number, the same number /model and the MLflow UI show.
+        # The timestamp tag set on the run is kept as version_tag.
+        "version": new_model_version,
+        "version_tag": version,
         "trained_at": trained_at,
         "n_train": n_train,
         "n_test": n_test,

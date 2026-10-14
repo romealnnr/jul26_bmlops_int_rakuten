@@ -1,5 +1,9 @@
 """DAG de versioning continu : entraîne le modèle Rakuten sur la prochaine
-tranche de données toutes les 2 jours, via l'API FastAPI existante."""
+tranche de données toutes les 2 jours, via l'API FastAPI existante.
+
+Quand toutes les lignes ont été consommées, /training renvoie le statut
+"no_new_data" : le calcul de drift est alors sauté et le run reste vert, au lieu
+d'échouer à chaque exécution une fois le jeu de données épuisé."""
 
 from __future__ import annotations
 
@@ -32,18 +36,26 @@ def rakuten_continuous_training():
         )
         response.raise_for_status()
         result = response.json()
-        print(f"Entraînement terminé : {result.get('comparison')}")
+        if result.get("status") == "no_new_data":
+            print(f"Pas de nouvelles données : {result.get('detail')}")
+        else:
+            print(f"Entraînement terminé : {result.get('comparison')}")
         return result
 
+    @task.short_circuit
+    def model_was_trained(training_result: dict) -> bool:
+        """False (drift sauté, run vert) quand rien n'a été entraîné."""
+        return training_result.get("status", "trained") == "trained"
+
     @task
-    def trigger_drift_computation(training_result: dict):
+    def trigger_drift_computation():
         response = requests.post(DRIFT_URL, headers=HEADERS, timeout=600)
         response.raise_for_status()
         result = response.json()
         print(f"Drift calculé : {len(result.get('metrics', []))} colonnes analysées")
         return result
 
-    trigger_drift_computation(trigger_continuous_training())
+    model_was_trained(trigger_continuous_training()) >> trigger_drift_computation()
 
 
 rakuten_continuous_training()

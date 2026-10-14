@@ -87,7 +87,7 @@ def client(monkeypatch):
     artifact = tiny_artifact()
     monkeypatch.setattr(predict_module, "load_artifact", lambda force_reload=False: artifact)
     # No MLflow server in tests: the per-batch MLflow summary is not what is tested here.
-    monkeypatch.setattr(predict_module, "_log_batch_to_mlflow", lambda results: None)
+    monkeypatch.setattr(predict_module, "log_batch_to_mlflow", lambda results: None)
     # Without the `with` block the lifespan (database init) does not run.
     return TestClient(api_main.app)
 

@@ -372,8 +372,12 @@ def render():
             }
             with stlt.spinner("Training... this can take a while"):
                 ok, data = call_api("POST", "/training", json=body, timeout=1800, admin=True)
-            if ok:
-                stlt.success(f"Trained version {data['version']}")
+            if ok and data.get("status") == "no_new_data":
+                stlt.info(data.get("detail") or "No new rows: nothing was trained.")
+                stlt.json(data)
+            elif ok:
+                decision = (data.get("comparison") or {}).get("decision", "")
+                stlt.success(f"Trained registry version {data['version']} ({decision})")
                 stlt.json(data)
             else:
                 stlt.error(data)

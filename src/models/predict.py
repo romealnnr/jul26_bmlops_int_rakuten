@@ -2,7 +2,12 @@
 
 Usage :
     python -m src.models.predict --sample
-    python -m src.models.predict --input payload.json
+    python -m src.models.predict --input payload.json [--mlflow]
+
+predict() never opens an MLflow run: the API calls it once per /predict request,
+and a run per request would flood the training experiment. A batch summary is
+logged only on demand from the CLI (--mlflow), in a separate experiment
+"<MLFLOW_EXPERIMENT_NAME>-predictions".
 """
 
 from __future__ import annotations
@@ -10,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import warnings as py_warnings
 from datetime import UTC
 from datetime import datetime as dt
 from pathlib import Path
@@ -25,6 +31,7 @@ from src.config import RAW_DATA_DIR, settings, setup_logging
 from src.data.db import Prediction, get_session
 from src.features.build_features import get_feature_columns, load_dataframe, prepare_frame
 from src.models.categories import category_name
+from src.models.registry_errors import is_not_found
 
 logger = logging.getLogger(__name__)
 
@@ -33,15 +40,39 @@ _ARTIFACT: dict[str, Any] | None = None
 FLAG_THRESHOLD = 0.6  # en dessous de ce score de confiance, la prédiction est flaggée
 
 
+CHAMPION_ALIAS = "champion"  # same alias as src.models.training.CHAMPION_ALIAS
+
+
 class ModelNotFoundError(RuntimeError):
-    """Aucun modèle en Production n'est disponible dans le MLflow Model Registry."""
+    """Aucun modèle @champion n'est disponible dans le MLflow Model Registry."""
+
+
+def _champion_version(client: MlflowClient, model_name: str):
+    """Registry version behind the @champion alias.
+
+    Read-only fallback for a registry created before the alias change: the
+    latest version still in the legacy "Production" stage is served until the
+    next training run sets the alias. Returns None when neither exists.
+    Any other registry error (unreachable, server error) is raised, so /health
+    reports it instead of claiming that no model exists."""
+    try:
+        return client.get_model_version_by_alias(model_name, CHAMPION_ALIAS)
+    except Exception as exc:
+        if not is_not_found(exc):
+            raise
+    legacy = [
+        v
+        for v in client.search_model_versions(f"name='{model_name}'")
+        if v.current_stage == "Production"
+    ]
+    return max(legacy, key=lambda v: int(v.version)) if legacy else None
 
 
 def load_artifact(force_reload: bool = False) -> dict[str, Any]:
-    """Charge le modèle actuellement en Production depuis le MLflow Model Registry,
-    avec cache mémoire. Contrairement à un fichier local, ceci garantit que l'API
-    sert toujours exactement le modèle que MLflow considère comme Production —
-    jamais un modèle rejeté par _compare_and_promote lors d'un entraînement."""
+    """Charge le modèle @champion depuis le MLflow Model Registry, avec cache
+    mémoire. Contrairement à un fichier local, ceci garantit que l'API sert
+    toujours exactement le modèle promu par _compare_and_promote, jamais un
+    modèle rejeté (@challenger) lors d'un entraînement."""
     global _ARTIFACT
 
     if _ARTIFACT is not None and not force_reload:
@@ -50,23 +81,25 @@ def load_artifact(force_reload: bool = False) -> dict[str, Any]:
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
     client = MlflowClient()
 
-    versions = client.get_latest_versions(settings.mlflow_registered_model_name,
-                                          stages=["Production"])
-    if not versions:
+    model_name = settings.mlflow_registered_model_name
+    version_info = _champion_version(client, model_name)
+    if version_info is None:
         raise ModelNotFoundError(
-            f"Aucun modèle en Production pour '{settings.mlflow_registered_model_name}'. "
+            f"Aucun modèle @{CHAMPION_ALIAS} pour '{model_name}'. "
             "Lancez d'abord : python -m src.models.training"
         )
 
-    version_info = versions[0]
     run = client.get_run(version_info.run_id)
-    model_uri = f"models:/{settings.mlflow_registered_model_name}/Production"
+    # Pinned to the resolved version, so the metadata and the weights always match.
+    model_uri = f"models:/{model_name}/{version_info.version}"
     pipeline = mlflow.sklearn.load_model(model_uri)
 
     _ARTIFACT = {
         "pipeline": pipeline,
         "model_name": run.data.params.get("model_name", settings.model_name),
-        "version": run.data.tags.get("version", str(version_info.version)),
+        # The registry version number, not the run's "version" tag: that tag is
+        # the training timestamp (YYYYmmddHHMMSS) and cannot be looked up in MLflow.
+        "version": str(version_info.version),
         "mlflow_model_version": str(version_info.version),
         "mlflow_run_id": version_info.run_id,
         "trained_at": dt.fromtimestamp(run.info.start_time / 1000, tz=UTC).isoformat(),
@@ -86,21 +119,27 @@ def model_info() -> dict[str, Any]:
     return {
         "model_name": artifact["model_name"],
         "version": artifact["version"],
+        "registered_model": settings.mlflow_registered_model_name,
+        "run_id": artifact["mlflow_run_id"],
         "trained_at": artifact["trained_at"],
         "n_features": len(artifact["feature_names"]),
         "metrics": artifact["metrics"],
     }
 
 
-def _log_batch_to_mlflow(results: list[dict[str, Any]]) -> None:
-    """Journalise un résumé du batch de prédictions dans MLflow (monitoring)."""
+def log_batch_to_mlflow(results: list[dict[str, Any]]) -> None:
+    """CLI uniquement : journalise un résumé du batch dans MLflow.
+
+    Expérience séparée "<MLFLOW_EXPERIMENT_NAME>-predictions" pour que l'expérience
+    d'entraînement ne contienne que des runs d'entraînement.
+    """
     n_total = len(results)
     n_flagged = sum(1 for r in results if r["flagged"])
     flag_rate = (n_flagged / n_total) if n_total else 0.0
 
     try:
         mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
-        mlflow.set_experiment(settings.mlflow_experiment_name)
+        mlflow.set_experiment(f"{settings.mlflow_experiment_name}-predictions")
 
         with mlflow.start_run(run_name="prediction_batch"):
             mlflow.set_tags(
@@ -177,9 +216,21 @@ def _true_label(value: Any, known: set[int]) -> int | None:
 
 
 def predict(
-    records: list[dict], log_to_db: bool = True, log_to_mlflow: bool = True
+    records: list[dict], log_to_db: bool = True, log_to_mlflow: bool | None = None
 ) -> list[dict[str, Any]]:
-    """Prédit pour une liste d'observations et journalise le résultat."""
+    """Prédit pour une liste d'observations et journalise le résultat en base.
+
+    Aucun run MLflow n'est créé ici (voir log_batch_to_mlflow pour la CLI).
+    log_to_mlflow is deprecated and ignored; it is still accepted so existing
+    callers keep working.
+    """
+    if log_to_mlflow is not None:
+        py_warnings.warn(
+            "predict(log_to_mlflow=...) is ignored: predict() no longer opens MLflow runs. "
+            "Use log_batch_to_mlflow(results) for a batch summary.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     if not records:
         raise ValueError("Aucune observation fournie")
     records = _validate(records)
@@ -251,9 +302,6 @@ def predict(
     if log_to_db:
         _store(records, results, artifact["version"])
 
-    if log_to_mlflow:
-        _log_batch_to_mlflow(results)
-
     return results
 
 
@@ -322,10 +370,19 @@ def main() -> int:
     group.add_argument("--input", type=Path, help="Fichier JSON (objet ou liste d'objets)")
     group.add_argument("--sample", action="store_true", help="Utilise une ligne de la base")
     parser.add_argument("--no-log", action="store_true", help="Ne journalise pas en base")
-    parser.add_argument("--no-mlflow", action="store_true", help="Ne journalise pas dans MLflow")
+    # Deprecated: predictions are no longer logged to MLflow by default, so there is
+    # nothing to switch off. Still accepted so existing scripts keep working.
+    parser.add_argument("--no-mlflow", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--mlflow",
+        action="store_true",
+        help="Journalise un résumé du batch dans l'expérience <MLFLOW_EXPERIMENT_NAME>-predictions",
+    )
     args = parser.parse_args()
 
     setup_logging()
+    if args.no_mlflow:
+        logger.warning("--no-mlflow is deprecated and has no effect (use --mlflow to log).")
 
     if args.sample:
         records = [sample_record()]
@@ -333,7 +390,9 @@ def main() -> int:
         payload = json.loads(args.input.read_text(encoding="utf-8"))
         records = payload if isinstance(payload, list) else [payload]
 
-    results = predict(records, log_to_db=not args.no_log, log_to_mlflow=not args.no_mlflow)
+    results = predict(records, log_to_db=not args.no_log)
+    if args.mlflow:
+        log_batch_to_mlflow(results)
     print(json.dumps(results, indent=2))
     return 0
 
