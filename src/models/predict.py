@@ -24,6 +24,7 @@ from PIL import Image
 from src.config import RAW_DATA_DIR, settings, setup_logging
 from src.data.db import Prediction, get_session
 from src.features.build_features import get_feature_columns, load_dataframe, prepare_frame
+from src.models.categories import category_name
 
 logger = logging.getLogger(__name__)
 
@@ -183,22 +184,35 @@ def predict(
         warnings_per_record.append([image_warning] if image_warning else [])
 
     X = prepare_frame(model_rows, feature_names)
-    labels = pipeline.predict(X)
     probabilities_matrix = pipeline.predict_proba(X)
+    # Column i of predict_proba is the class pipeline.classes_[i].
+    classes = [int(c) for c in pipeline.classes_]
 
     results = []
-    for label, proba_row, used, warnings in zip(
-        labels, probabilities_matrix, image_used, warnings_per_record, strict=True
+    for proba_row, used, warnings in zip(
+        probabilities_matrix, image_used, warnings_per_record, strict=True
     ):
-        probability = round(float(max(proba_row)), 6)
-        flagged = probability < FLAG_THRESHOLD
+        # The three most likely categories, best first. top3[0] is the prediction.
+        ranked = sorted(range(len(classes)), key=lambda i: proba_row[i], reverse=True)[:3]
+        top3 = [
+            {
+                "prediction": classes[i],
+                "category_name": category_name(classes[i]),
+                "probability": round(float(proba_row[i]), 6),
+            }
+            for i in ranked
+        ]
+        best = top3[0]
+        flagged = best["probability"] < FLAG_THRESHOLD
         results.append(
             {
-                "prediction": int(label),
-                "probability": probability,
+                "prediction": best["prediction"],
+                "category_name": best["category_name"],
+                "probability": best["probability"],
                 "model_version": artifact["version"],
                 "flagged": flagged,
                 "flag_reason": "low_confidence" if flagged else None,
+                "top3": top3,
                 "image_used": used,
                 "warnings": warnings,
             }

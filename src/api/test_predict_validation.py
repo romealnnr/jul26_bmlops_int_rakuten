@@ -41,7 +41,8 @@ def client(monkeypatch):
     def fake_predict(records, **_kwargs):
         calls.append(records)
         result = {
-            "prediction": 10, "probability": 0.9, "model_version": "1",
+            "prediction": 10, "category_name": "Used books", "top3": [],
+            "probability": 0.9, "model_version": "1",
             "flagged": False, "flag_reason": None,
             "image_used": False, "warnings": [],
         }

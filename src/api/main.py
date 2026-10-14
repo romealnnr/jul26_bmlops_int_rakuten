@@ -169,10 +169,20 @@ class TrainingResponse(BaseModel):
     comparison: dict[str, Any] | None = None
 
 
+class CategoryScore(BaseModel):
+    prediction: int
+    category_name: str
+    probability: float
+
+
 class PredictionItem(BaseModel):
     prediction: int
+    category_name: str
     probability: float
     model_version: str
+    flagged: bool
+    flag_reason: str | None = None
+    top3: list[CategoryScore]
     image_used: bool
     warnings: list[str] = Field(default_factory=list)
 
