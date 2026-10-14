@@ -75,6 +75,7 @@ services:
       AIRFLOW__API_AUTH__JWT_ISSUER: airflow
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      API_KEY: ${API_KEY:-}
     user: "${AIRFLOW_UID}:0"
     command:
       - db
@@ -199,6 +200,10 @@ services:
       DAGSHUB_URL: ${DAGSHUB_URL:-https://dagshub.com/grover.sandeep/jul26_bmlops_int_rakuten}
       RAW_DIR: /data/raw
       API_IMAGE_ROOT: /app/src/data/raw
+      # Sent as X-API-Key on /training and /drift/compute; the admin forms are
+      # hidden unless STREAMLIT_ADMIN_PASSWORD is set and typed.
+      API_KEY: ${API_KEY:-}
+      STREAMLIT_ADMIN_PASSWORD: ${STREAMLIT_ADMIN_PASSWORD:-}
     volumes:
       - ./src/data/raw:/data/raw:ro
     ports:

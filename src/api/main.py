@@ -8,14 +8,15 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from src.api.schemas import PredictRequest
+from src.api.security import require_api_key
 from src.config import ensure_dirs, setup_logging
-from src.data.db import init_db, ping
+from src.data.db import TrainingInProgressError, init_db, ping, training_lock
 from src.models import predict as predict_module
 from src.models.predict import ModelNotFoundError
 from src.models.training import train
@@ -64,6 +65,17 @@ def _training_in_progress() -> bool:
 
 
 def _train_and_record(**kwargs: Any) -> dict[str, Any]:
+    """Run a training while holding the training lock (one run at a time).
+
+    The lock is a PostgreSQL advisory lock, so it holds across API replicas and
+    between the DAG, Streamlit and the webhook. A second caller gets
+    TrainingInProgressError (a RuntimeError, so /training answers 409) at once.
+    """
+    with training_lock():
+        return _record_training(**kwargs)
+
+
+def _record_training(**kwargs: Any) -> dict[str, Any]:
     """Run a training and keep the metrics honest, wherever it was started from.
 
     Both the manual endpoint and the alert webhook go through here, so a run
@@ -108,6 +120,8 @@ def _alert_triggered_training() -> None:
             "Alert-triggered training finished: version %s, %s",
             summary.get("version"), summary.get("comparison", {}).get("decision"),
         )
+    except TrainingInProgressError:
+        logger.info("Alert-triggered training skipped: a run is already in progress")
     except Exception:  # noqa: BLE001
         logger.exception("Alert-triggered training failed")
 
@@ -233,7 +247,12 @@ def health() -> dict[str, Any]:
     }
 
 
-@app.post("/training", response_model=TrainingResponse, tags=["model"])
+@app.post(
+    "/training",
+    response_model=TrainingResponse,
+    tags=["model"],
+    dependencies=[Depends(require_api_key)],
+)
 async def run_training(request: TrainingRequest) -> TrainingResponse:
     """Réentraîne le modèle baseline à partir des données en base."""
     try:
@@ -350,7 +369,7 @@ def model_metadata() -> dict[str, Any]:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@app.post("/drift/compute", tags=["monitoring"])
+@app.post("/drift/compute", tags=["monitoring"], dependencies=[Depends(require_api_key)])
 async def run_drift_computation() -> dict[str, Any]:
     """Calcule le data drift entre la baseline et le dernier batch traité,
     et persiste les métriques en base pour Grafana."""

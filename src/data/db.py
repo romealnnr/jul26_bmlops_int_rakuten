@@ -165,3 +165,70 @@ def ping() -> bool:
 def count_raw_samples() -> int:
     with get_session() as session:
         return session.scalar(select(func.count()).select_from(RawSample)) or 0
+
+
+# --------------------------------------------------------------------------- training lock
+# Key of the PostgreSQL advisory lock that serialises training runs. Any fixed
+# 64-bit integer works; it only has to be the same in every process. This one
+# is the first 8 bytes of sha1("rakuten-training") read as a signed integer.
+TRAINING_LOCK_KEY = 8772774806204630220
+
+
+class TrainingInProgressError(RuntimeError):
+    """Raised when another training run already holds the training lock.
+
+    A RuntimeError subclass, so existing callers that map RuntimeError to HTTP
+    409 keep working; the API maps it explicitly to 409 with this message.
+    """
+
+    def __init__(self, message: str = "A training run is already in progress") -> None:
+        super().__init__(message)
+
+
+@contextmanager
+def training_lock() -> Iterator[None]:
+    """Allow only one training run at a time, across processes and replicas.
+
+    Uses a PostgreSQL session-level advisory lock (pg_try_advisory_lock) held
+    on a dedicated connection for the whole training run. The DAG and the
+    Streamlit button both train through the API, and the API may run as several
+    replicas; an in-process flag or threading.Lock would only protect one
+    process, while the database is shared by all of them.
+
+    pg_TRY_advisory_lock does not wait: a second caller gets
+    TrainingInProgressError immediately (HTTP 409) instead of queueing a
+    duplicate training run. If the process dies, PostgreSQL drops the
+    connection and releases the lock by itself, so a crash cannot leave the
+    lock stuck.
+    """
+    # Local import: keeps this helper an append-only change to db.py.
+    from sqlalchemy import text
+
+    conn = engine.connect()
+    locked = False
+    try:
+        locked = bool(
+            conn.execute(
+                text("SELECT pg_try_advisory_lock(:key)"), {"key": TRAINING_LOCK_KEY}
+            ).scalar()
+        )
+        # Commit the implicit transaction: the lock is session-level and stays
+        # held; an idle-in-transaction connection would hold a snapshot open
+        # for the whole training run.
+        conn.commit()
+        if not locked:
+            raise TrainingInProgressError()
+        yield
+    finally:
+        if locked:
+            try:
+                conn.execute(
+                    text("SELECT pg_advisory_unlock(:key)"), {"key": TRAINING_LOCK_KEY}
+                )
+                conn.commit()
+            except Exception:  # noqa: BLE001
+                # Never return a connection that may still hold the lock to the
+                # pool: discard it, which closes the session and frees the lock.
+                logger.exception("Could not release the training lock; dropping the connection")
+                conn.invalidate()
+        conn.close()

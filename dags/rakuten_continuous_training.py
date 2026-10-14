@@ -3,6 +3,7 @@ tranche de données toutes les 2 jours, via l'API FastAPI existante."""
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta
 
 import requests
@@ -10,6 +11,8 @@ from airflow.sdk import dag, task
 
 TRAINING_URL = "http://api:8000/training"
 DRIFT_URL = "http://api:8000/drift/compute"
+# /training and /drift/compute require the API key (API_KEY in .env, passed by docker-compose).
+HEADERS = {"X-API-Key": os.environ.get("API_KEY", "").strip()}
 
 
 @dag(
@@ -24,7 +27,9 @@ DRIFT_URL = "http://api:8000/drift/compute"
 def rakuten_continuous_training():
     @task
     def trigger_continuous_training():
-        response = requests.post(TRAINING_URL, json={"continuous": True}, timeout=1800)
+        response = requests.post(
+            TRAINING_URL, json={"continuous": True}, headers=HEADERS, timeout=1800
+        )
         response.raise_for_status()
         result = response.json()
         print(f"Entraînement terminé : {result.get('comparison')}")
@@ -32,7 +37,7 @@ def rakuten_continuous_training():
 
     @task
     def trigger_drift_computation(training_result: dict):
-        response = requests.post(DRIFT_URL, timeout=600)
+        response = requests.post(DRIFT_URL, headers=HEADERS, timeout=600)
         response.raise_for_status()
         result = response.json()
         print(f"Drift calculé : {len(result.get('metrics', []))} colonnes analysées")
