@@ -43,6 +43,7 @@ def client(monkeypatch):
         result = {
             "prediction": 10, "probability": 0.9, "model_version": "1",
             "flagged": False, "flag_reason": None,
+            "image_used": False, "warnings": [],
         }
         return [dict(result) for _ in records]
 

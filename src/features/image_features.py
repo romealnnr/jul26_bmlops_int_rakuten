@@ -3,12 +3,16 @@ comme un transformer scikit-learn pour s'intégrer au ColumnTransformer."""
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import torch
 from PIL import Image
 from sklearn.base import BaseEstimator, TransformerMixin
 from torch import nn
 from torchvision import models, transforms
+
+logger = logging.getLogger(__name__)
 
 IMAGE_SIZE = 224
 IMAGE_EMBEDDING_DIM = 512
@@ -45,6 +49,7 @@ class ImageEmbeddingTransformer(BaseEstimator, TransformerMixin):
         embeddings = []
 
         paths = list(paths)
+        n_missing, n_unreadable, example = 0, 0, None
         for start in range(0, len(paths), self.batch_size):
             batch_paths = paths[start:start + self.batch_size]
             tensors, valid_mask = [], []
@@ -57,8 +62,11 @@ class ImageEmbeddingTransformer(BaseEstimator, TransformerMixin):
                         tensors.append(self._transform(image))
                         valid_mask.append(True)
                         loaded = True
-                    except Exception:
-                        pass
+                    except Exception as exc:  # noqa: BLE001
+                        n_unreadable += 1
+                        example = example or f"{path} ({exc.__class__.__name__})"
+                else:
+                    n_missing += 1
                 if not loaded:
                     tensors.append(torch.zeros(3, IMAGE_SIZE, IMAGE_SIZE))
                     valid_mask.append(False)
@@ -73,6 +81,16 @@ class ImageEmbeddingTransformer(BaseEstimator, TransformerMixin):
 
             embeddings.append(batch_embeddings)
 
+        if n_unreadable:
+            # A zero embedding means "no image": say how many paths were given but unusable,
+            # so a wrong image folder does not silently turn the model into text-only.
+            logger.warning(
+                "%d of %d image paths could not be read and were replaced by a zero "
+                "embedding (no image), e.g. %s",
+                n_unreadable, len(paths), example,
+            )
+        if n_missing:
+            logger.info("%d of %d rows have no image_path (zero embedding)", n_missing, len(paths))
         return np.vstack(embeddings) if embeddings else np.empty((0, IMAGE_EMBEDDING_DIM))
 
     def get_feature_names_out(self, input_features=None):

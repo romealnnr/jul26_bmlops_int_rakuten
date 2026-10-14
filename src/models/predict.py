@@ -19,8 +19,9 @@ import mlflow
 import mlflow.sklearn
 import pandas as pd
 from mlflow.tracking import MlflowClient
+from PIL import Image
 
-from src.config import settings, setup_logging
+from src.config import RAW_DATA_DIR, settings, setup_logging
 from src.data.db import Prediction, get_session
 from src.features.build_features import get_feature_columns, load_dataframe, prepare_frame
 
@@ -130,6 +131,36 @@ def _validate(records: list[dict]) -> list[dict[str, Any]]:
     return [ProductRecord.model_validate(record).model_dump() for record in records]
 
 
+def _check_image(image_path: str | None) -> tuple[str | None, str | None]:
+    """Return (usable absolute path, None) or (None, warning).
+
+    Only existing, readable image files inside the raw data folder are used. A
+    relative path is read relative to that folder. Anything else is reported, and
+    the model then sees no image (the image transformer encodes it as zeros).
+    """
+    if image_path is None or not str(image_path).strip():
+        return None, "no image_path: prediction uses text only"
+
+    raw_root = RAW_DATA_DIR.resolve()
+    candidate = Path(image_path)
+    if not candidate.is_absolute():
+        candidate = raw_root / candidate
+    resolved = candidate.resolve()
+
+    if not resolved.is_relative_to(raw_root):
+        return None, (
+            f"image_path outside the raw data folder: {image_path}; prediction uses text only"
+        )
+    if not resolved.is_file():
+        return None, f"image_path not found: {image_path}; prediction uses text only"
+    try:
+        with Image.open(resolved) as image:
+            image.verify()
+    except Exception:  # noqa: BLE001
+        return None, f"image_path unreadable: {image_path}; prediction uses text only"
+    return str(resolved), None
+
+
 def predict(
     records: list[dict], log_to_db: bool = True, log_to_mlflow: bool = True
 ) -> list[dict[str, Any]]:
@@ -142,12 +173,23 @@ def predict(
     pipeline = artifact["pipeline"]
     feature_names: list[str] = artifact["feature_names"]
 
-    X = prepare_frame(records, feature_names)
+    # A missing or unusable image_path is never silently replaced by a blank image:
+    # only checked paths reach the model, and each result says whether its image was used.
+    model_rows, image_used, warnings_per_record = [], [], []
+    for record in records:
+        usable_path, image_warning = _check_image(record.get("image_path"))
+        model_rows.append({**record, "image_path": usable_path})
+        image_used.append(usable_path is not None)
+        warnings_per_record.append([image_warning] if image_warning else [])
+
+    X = prepare_frame(model_rows, feature_names)
     labels = pipeline.predict(X)
     probabilities_matrix = pipeline.predict_proba(X)
 
     results = []
-    for label, proba_row in zip(labels, probabilities_matrix, strict=True):
+    for label, proba_row, used, warnings in zip(
+        labels, probabilities_matrix, image_used, warnings_per_record, strict=True
+    ):
         probability = round(float(max(proba_row)), 6)
         flagged = probability < FLAG_THRESHOLD
         results.append(
@@ -157,8 +199,14 @@ def predict(
                 "model_version": artifact["version"],
                 "flagged": flagged,
                 "flag_reason": "low_confidence" if flagged else None,
+                "image_used": used,
+                "warnings": warnings,
             }
         )
+
+    n_without_image = image_used.count(False)
+    if n_without_image:
+        logger.warning("%d/%d record(s) predicted without an image", n_without_image, len(results))
 
     n_flagged = sum(1 for r in results if r["flagged"])
     if n_flagged:

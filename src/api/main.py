@@ -173,6 +173,8 @@ class PredictionItem(BaseModel):
     prediction: int
     probability: float
     model_version: str
+    image_used: bool
+    warnings: list[str] = Field(default_factory=list)
 
 
 class PredictResponse(BaseModel):
