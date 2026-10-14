@@ -12,6 +12,7 @@ from config import (
     FLAG_THRESHOLD,
     PRDTYPECODE_LABELS,
     RAW_DIR,
+    SPLITS,
     Y_TRAIN_FILE,
 )
 
@@ -94,6 +95,11 @@ def show_model_info(info: dict):
         stlt.json(other)
 
 
+def available_splits() -> list[str]:
+    """Only the splits whose X_<split>_update.csv is actually present in RAW_DIR."""
+    return [s for s in SPLITS if (RAW_DIR / f"X_{s}_update.csv").is_file()]
+
+
 @stlt.cache_data
 def load_split(split: str) -> pd.DataFrame:
     x = pd.read_csv(RAW_DIR / f"X_{split}_update.csv", index_col=0)
@@ -127,11 +133,26 @@ def _random_row(n: int):
 
 
 def dataset_sample_mode():
-    split = stlt.radio("Split", ["train", "test"], horizontal=True)
+    splits = available_splits()
+    missing = [s for s in SPLITS if s not in splits]
+    if not splits:
+        stlt.error(
+            f"No dataset CSV found in {RAW_DIR} (expected X_train_update.csv). "
+            "Is ./src/data/raw mounted into the streamlit container?"
+        )
+        return
+    split = stlt.radio("Split", splits, horizontal=True)
+    if missing:
+        stlt.caption(
+            "Not available: "
+            + ", ".join(f"'{s}' (X_{s}_update.csv is not in {RAW_DIR})" for s in missing)
+            + ". Only splits present in the data folder are offered."
+        )
+
     try:
         df = load_split(split)
-    except FileNotFoundError as exc:
-        stlt.error(f"Dataset file not found: {exc}. Is ./src/data/raw mounted into the container?")
+    except (FileNotFoundError, pd.errors.ParserError, KeyError) as exc:
+        stlt.error(f"Cannot read the {split} split from {RAW_DIR}: {exc}")
         return
 
     stlt.session_state.setdefault("row_pos", 0)

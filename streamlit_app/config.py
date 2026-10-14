@@ -6,6 +6,7 @@ RAW_DIR = Path(os.getenv("RAW_DIR", "/data/raw"))
 # /predict are built from this root (trailing "/" stripped to avoid "//").
 API_IMAGE_ROOT = os.getenv("API_IMAGE_ROOT", "/app/src/data/raw").rstrip("/")
 Y_TRAIN_FILE = "Y_train_CVw08PX.csv"
+SPLITS = ("train", "test")
 
 API_INTERNAL_URL = os.getenv("API_INTERNAL_URL", "http://api:8000")
 PROMETHEUS_INTERNAL_URL = os.getenv("PROMETHEUS_INTERNAL_URL", "http://prometheus:9090")
