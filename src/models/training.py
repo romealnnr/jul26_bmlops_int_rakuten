@@ -79,6 +79,65 @@ def _dataset_fingerprint() -> str:
     return hasher.hexdigest()[:12]
 
 
+def _batches_for_rows(row_ids) -> list[int]:
+    """Which data batches the rows used by this run came from.
+
+    load_dataframe selects a contiguous range of ids, so the range is enough to
+    find their batches without sending tens of thousands of ids to the database.
+    Rows ingested before lineage existed carry no batch and are left out, which
+    is why an empty list is a meaningful answer rather than an error.
+    """
+    from sqlalchemy import select
+
+    from src.data.db import RawSample, get_session
+
+    low, high = int(row_ids.min()), int(row_ids.max())
+    with get_session() as session:
+        found = session.execute(
+            select(RawSample.batch_id).where(RawSample.id.between(low, high)).distinct()
+        ).all()
+    return sorted({int(batch) for (batch,) in found if batch is not None})
+
+
+def _data_version_tags(batch_ids: list[int]) -> dict[str, str]:
+    """MLflow tags that make the data behind this run recoverable.
+
+    A batch id is only meaningful inside this database, so the DVC hashes the
+    batches were recorded with travel alongside it. Paired with git_commit they
+    are an address rather than a label: `dvc pull` resolves them back to the
+    exact bytes the model was trained on.
+
+    Falls back to the locally computed fingerprint when no batch is found, so a
+    run on pre-lineage rows still records something instead of nothing.
+    """
+    from sqlalchemy import select
+
+    from src.data.db import DataBatch, get_session
+
+    if not batch_ids:
+        return {
+            "data_versioning": "local_fingerprint",
+            "data_fingerprint": _dataset_fingerprint(),
+        }
+
+    with get_session() as session:
+        batches = session.execute(
+            select(DataBatch.sources).where(DataBatch.id.in_(batch_ids))
+        ).all()
+
+    sources: dict[str, str] = {}
+    for (batch_sources,) in batches:
+        sources.update(batch_sources or {})
+
+    tags = {
+        "data_versioning": "dvc",
+        "data_batches": ",".join(str(batch) for batch in batch_ids),
+    }
+    for name, md5 in sorted(sources.items()):
+        tags[f"data_dvc_{name.replace('.', '_')}"] = str(md5)
+    return tags
+
+
 def _setup_mlflow() -> None:
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
     mlflow.set_experiment(settings.mlflow_experiment_name)
@@ -306,6 +365,7 @@ def train(
     X_train, X_test, y_train, y_test = split_train_test(X, y, test_size, random_state)
 
     logger.info("Training on %d line (%d en test)", len(X_train), len(X_test))
+    batch_ids = _batches_for_rows(df["_id"])
 
     with mlflow.start_run() as run:
         pipeline = build_pipeline(feature_names, random_state)
@@ -327,9 +387,9 @@ def train(
         mlflow.set_tags({
             "target_column": settings.target_column,
             "data_source": "postgresql:raw_samples",
-            "data_fingerprint": _dataset_fingerprint(),
             "git_commit": os.getenv("GIT_COMMIT", "unknown"),
             "version": version,
+            **_data_version_tags(batch_ids),
         })
         mlflow.log_metrics({
             "accuracy": metrics["accuracy"],
@@ -385,6 +445,7 @@ def train(
         "metrics": metrics,
         "mlflow_run_id": run_id,
         "mlflow_model_version": new_model_version,
+        "data_batches": batch_ids,
         "comparison": comparison,
     }
     settings.metrics_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")

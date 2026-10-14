@@ -1,0 +1,7 @@
+# Data files versioned with DVC. The .dvc pointers next to them are in git.
+/X_train_update.csv
+/Y_train_CVw08PX.csv
+/X_test_update.csv
+
+# Merged copy written by src/data/make_dataset.py
+/rakuten_merged.csv

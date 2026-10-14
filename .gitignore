@@ -77,7 +77,10 @@ target/
 
 # exclude data from source control by default
 /data/
-src/data/raw
+
+# Raw data is versioned with DVC, not with git. The data files themselves are
+# excluded by the .gitignore files DVC keeps inside src/data/raw/, so that the
+# .dvc pointers beside them can stay in git.
 
 # Mac OS-specific storage files
 .DS_Store

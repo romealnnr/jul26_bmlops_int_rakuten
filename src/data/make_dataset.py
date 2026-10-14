@@ -13,8 +13,17 @@ import logging
 import pandas as pd
 from sqlalchemy import insert
 
-from src.config import RAW_DATA_DIR, IMAGE_TRAIN_DIR, ensure_dirs, settings, setup_logging
-from src.data.db import RawSample, count_raw_samples, drop_db, get_session, init_db, ping
+from src.config import IMAGE_TRAIN_DIR, RAW_DATA_DIR, ensure_dirs, setup_logging
+from src.data.db import (
+    DataBatch,
+    RawSample,
+    count_raw_samples,
+    drop_db,
+    get_session,
+    init_db,
+    ping,
+)
+from src.data.versioning import UNTRACKED, collect_sources, current_git_commit
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +92,44 @@ def dataframe_to_rows(df: pd.DataFrame) -> list[dict]:
     return records
 
 
-def ingest(rows: list[dict], chunk_size: int = 500) -> int:
-    """Insère les lignes par lots."""
+def record_batch(n_rows: int) -> int:
+    """Record which version of the raw files this ingestion is loading.
+
+    Written before the rows, so that every row inserted afterwards can point at
+    it. The hashes come from the DVC pointers, which makes the batch a
+    resolvable address back to the exact bytes rather than just a timestamp.
+    """
+    sources = collect_sources()
+    untracked = [name for name, value in sources.items() if value == UNTRACKED]
+    if untracked:
+        logger.warning(
+            "No DVC pointer found for %s. This ingestion will be recorded, but those "
+            "inputs will not be traceable back to a version. Run `dvc pull` first.",
+            ", ".join(untracked),
+        )
+
+    with get_session() as session:
+        batch = DataBatch(
+            sources=sources,
+            git_commit=current_git_commit(),
+            n_rows=n_rows,
+            note=f"ingestion of {SOURCE_NAME}",
+        )
+        session.add(batch)
+        session.flush()  # assigns the primary key before the transaction closes
+        batch_id = int(batch.id)
+
+    logger.info("Lot de données enregistré : id=%d, %d lignes, sources=%s",
+                batch_id, n_rows, sources)
+    return batch_id
+
+
+def ingest(rows: list[dict], batch_id: int | None = None, chunk_size: int = 500) -> int:
+    """Insère les lignes par lots, en les rattachant à leur lot de données."""
+    if batch_id is not None:
+        for record in rows:
+            record["batch_id"] = batch_id
+
     inserted = 0
     with get_session() as session:
         for start in range(0, len(rows), chunk_size):
@@ -97,7 +142,11 @@ def ingest(rows: list[dict], chunk_size: int = 500) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Ingestion one-shot vers PostgreSQL")
-    parser.add_argument("--force", action="store_true", help="Vide les tables et réinsère les données")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Vide les tables et réinsère les données",
+    )
     parser.add_argument("--chunk-size", type=int, default=500)
     args = parser.parse_args()
 
@@ -119,9 +168,11 @@ def main() -> int:
 
     df = load_source_dataframe()
     save_raw_copy(df)
-    inserted = ingest(dataframe_to_rows(df))
+    rows = dataframe_to_rows(df)
+    batch_id = record_batch(len(rows))
+    inserted = ingest(rows, batch_id=batch_id, chunk_size=args.chunk_size)
 
-    logger.info("Ingestion terminée : %d lignes dans raw_samples", inserted)
+    logger.info("Ingestion terminée : %d lignes dans raw_samples (lot %d)", inserted, batch_id)
     return 0
 
 
