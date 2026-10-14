@@ -97,7 +97,9 @@ def load_artifact(force_reload: bool = False) -> dict[str, Any]:
     _ARTIFACT = {
         "pipeline": pipeline,
         "model_name": run.data.params.get("model_name", settings.model_name),
-        "version": run.data.tags.get("version", str(version_info.version)),
+        # The registry version number, not the run's "version" tag: that tag is
+        # the training timestamp (YYYYmmddHHMMSS) and cannot be looked up in MLflow.
+        "version": str(version_info.version),
         "mlflow_model_version": str(version_info.version),
         "mlflow_run_id": version_info.run_id,
         "trained_at": dt.fromtimestamp(run.info.start_time / 1000, tz=UTC).isoformat(),
@@ -117,6 +119,8 @@ def model_info() -> dict[str, Any]:
     return {
         "model_name": artifact["model_name"],
         "version": artifact["version"],
+        "registered_model": settings.mlflow_registered_model_name,
+        "run_id": artifact["mlflow_run_id"],
         "trained_at": artifact["trained_at"],
         "n_features": len(artifact["feature_names"]),
         "metrics": artifact["metrics"],
