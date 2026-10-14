@@ -74,7 +74,7 @@ def _train_and_record(**kwargs: Any) -> dict[str, Any]:
     try:
         summary = train(**kwargs)
     except Exception:
-        mon.TRAINING_RUNS.labels(outcome="failed").inc()
+        mon.observe_training_outcome(succeeded=False)
         raise
     finally:
         # Cleared here and nowhere else: a run that crashes must not leave the
@@ -85,7 +85,7 @@ def _train_and_record(**kwargs: Any) -> dict[str, Any]:
         mon.TRAINING_IN_PROGRESS.set(0)
         mon.TRAINING_DURATION.observe(time.perf_counter() - started)
 
-    mon.TRAINING_RUNS.labels(outcome="succeeded").inc()
+    mon.observe_training_outcome(succeeded=True)
     predict_module.load_artifact(force_reload=True)
     _refresh_model_metrics()
     return summary
@@ -97,7 +97,8 @@ def _alert_triggered_training() -> None:
     Exceptions are swallowed on purpose: this runs after the HTTP response has
     already gone back to Grafana, so there is nobody left to return an error
     to. The failure is recorded by _train_and_record in
-    rakuten_training_runs_total{outcome="failed"} and in the log, which is
+    rakuten_training_runs_total{outcome="failed"}, in
+    rakuten_last_training_failed and in the log, which is
     where anyone would look for it.
     """
     try:

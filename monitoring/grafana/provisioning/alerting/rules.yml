@@ -120,17 +120,27 @@ groups:
       # monitoring system can be in, because it is indistinguishable from
       # good news.
       #
-      # A never-run monitor reports -1, not a large age, so a fresh install
-      # does not fire this on its first day.
+      # Why 72 h (259200 s): the DAG (dags/rakuten_continuous_training.py)
+      # runs every 2 days (48 h, 172800 s) and computes drift at the end of
+      # each run, after training (up to 1800 s) and the drift job (up to
+      # 600 s). 72 h is one cycle plus 24 h of margin: a run that starts late
+      # or is retried does not fire the alert, and one missed run does. With
+      # 1 day, as before, this alert fired for about half of every normal
+      # cycle. Change it together with the DAG schedule.
+      #
+      # outside_range [-1.5, 259200] fires when the age is above 72 h OR
+      # equals -2 (the drift table cannot be read). It stays quiet at -1 (no
+      # report has ever been produced), so a fresh install does not fire.
       - uid: rakuten-drift-monitor-stale
         title: Drift monitor has stopped reporting
         condition: C
         for: 15m
         annotations:
           summary: >-
-            No drift report has been produced for over 24 hours. The drift
-            dashboard is showing stale data while appearing normal. Check the
-            Airflow DAG and the /drift/compute endpoint.
+            No drift report for more than 3 days (the DAG runs every 2 days),
+            or the drift table cannot be read. The drift dashboard is showing
+            stale data while appearing normal. Check the Airflow DAG
+            rakuten_continuous_training and the /drift/compute endpoint.
         labels:
           severity: critical
         noDataState: NoData
@@ -157,28 +167,34 @@ groups:
               type: threshold
               expression: B
               conditions:
-                - evaluator: {type: gt, params: [86400]}
+                - evaluator: {type: outside_range, params: [-1.5, 259200]}
 
       # ------------------------------------------------------------------
       - uid: rakuten-training-failures
         title: Training runs are failing
         condition: C
-        for: 5m
+        for: 1m
         annotations:
           summary: >-
-            At least one training run has failed in the last hour. The model
-            in production is not being refreshed; check the API logs.
+            The most recent training run failed, and no run has succeeded
+            since. The model in production is not being refreshed; check the
+            API logs and the Airflow task logs.
         labels:
           severity: warning
         noDataState: OK
         execErrState: Error
+        # rakuten_last_training_failed is 1 from a failed run until the next
+        # successful one. The previous rule counted failures over the last
+        # hour only, so with a 2-day schedule a failure was visible for about
+        # an hour and then resolved by itself. A down API already shows as
+        # NoData on rakuten-model-not-loaded, hence noDataState OK here.
         data:
           - refId: A
-            relativeTimeRange: {from: 3600, to: 0}
+            relativeTimeRange: {from: 600, to: 0}
             datasourceUid: prometheus_ds
             model:
               refId: A
-              expr: sum(increase(rakuten_training_runs_total{outcome="failed"}[1h]))
+              expr: max(rakuten_last_training_failed)
               instant: true
           - refId: B
             datasourceUid: __expr__
