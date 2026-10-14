@@ -32,6 +32,7 @@ packages = [
     "src.data",
     "src.features",
     "src.models",
+    "src.monitoring",
     "src.visualization",
 ]
 
