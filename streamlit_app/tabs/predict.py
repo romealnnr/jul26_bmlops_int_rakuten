@@ -5,11 +5,11 @@ from pathlib import Path
 import pandas as pd
 import requests
 import streamlit as stlt
+from records import records_for_api
 
 from config import (
     API_IMAGE_ROOT,
     API_INTERNAL_URL,
-    FLAG_THRESHOLD,
     PRDTYPECODE_LABELS,
     RAW_DIR,
     SPLITS,
@@ -24,6 +24,12 @@ EXAMPLE_RECORD = {
     "image_path": None,
 }
 
+# Fields /predict accepts per record (src/api/schemas.py ProductRecord).
+API_RECORD_FIELDS = [
+    "designation", "description", "productid", "imageid", "image_path", "true_label",
+]
+
+
 def label(code) -> str:
     try:
         return f"{int(code)} ({PRDTYPECODE_LABELS.get(int(code), 'unknown')})"
@@ -32,10 +38,8 @@ def label(code) -> str:
     
 
 def to_df(payload: dict) -> pd.DataFrame:
-    """ Adds a results flag column to the prediction results """
-    df = pd.DataFrame(payload["results"])
-    df["flagged"] = df["probability"] < FLAG_THRESHOLD
-    return df
+    """Prediction results as a table. The flag comes from the API, never recomputed here."""
+    return pd.DataFrame(payload["results"])
 
 
 def call_api(method: str, path: str, timeout: int = 30, **kwargs):
@@ -61,11 +65,15 @@ def call_api(method: str, path: str, timeout: int = 30, **kwargs):
 
 def show_predictions(payload: dict):
     df = to_df(payload)
+    if "flagged" not in df.columns:
+        stlt.warning("The API response has no 'flagged' field (older API version).")
+        df["flagged"] = False
     n_flagged = int(df["flagged"].sum())
-    stlt.success(
-        f"{payload['count']} prediction(s), {n_flagged} flagged "
-        f"(confidence < {FLAG_THRESHOLD:.0%})"
-    )
+    threshold = payload.get("flag_threshold")
+    msg = f"{payload['count']} prediction(s), {n_flagged} flagged by the API"
+    if threshold is not None:
+        msg += f" (confidence < {float(threshold):.0%})"
+    stlt.success(msg)
     stlt.dataframe(df, use_container_width=True)
     if len(df) == 1:
         row = df.iloc[0]
@@ -74,7 +82,7 @@ def show_predictions(payload: dict):
         c2.metric("Probability", f"{row['probability']:.1%}")
         c3.metric("Model version", row["model_version"])
         if row["flagged"]:
-            stlt.warning("Low confidence: this prediction would be flagged.")
+            stlt.warning(f"Flagged by the API: {row.get('flag_reason') or 'no reason given'}")
 
 
 def show_model_info(info: dict):
@@ -269,7 +277,8 @@ def render():
 
     elif mode == "CSV batch":
         stlt.caption(
-            "CSV columns: designation, description, productid, imageid, image_path"
+            "CSV columns: designation, description, productid, imageid, image_path, "
+            "true_label (optional)"
         )
         file = stlt.file_uploader("CSV file", type="csv")
         if file is not None:
@@ -278,7 +287,11 @@ def render():
             max_rows = stlt.number_input("Max rows to send", 1, 1000, min(len(df), 100))
             if stlt.button("Predict batch"):
                 sample = df.head(int(max_rows)).astype(object)
-                records = sample.where(sample.notna(), None).to_dict("records")
+                # /predict rejects unknown fields (422): send only the accepted columns.
+                dropped = [c for c in sample.columns if c not in API_RECORD_FIELDS]
+                if dropped:
+                    stlt.caption(f"Not sent to the API: {', '.join(map(str, dropped))}")
+                records = records_for_api(sample, API_RECORD_FIELDS)
                 ok, data = call_api("POST", "/predict", json={"records": records}, timeout=120)
                 if ok:
                     show_predictions(data)

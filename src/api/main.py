@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, status
@@ -12,6 +13,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from src.api.schemas import PredictRequest
 from src.config import ensure_dirs, setup_logging
 from src.data.db import init_db, ping
 from src.models import predict as predict_module
@@ -168,34 +170,51 @@ class TrainingResponse(BaseModel):
     comparison: dict[str, Any] | None = None
 
 
-class PredictRequest(BaseModel):
-    records: list[dict[str, Any]] = Field(min_length=1)
+class CategoryScore(BaseModel):
+    prediction: int
+    category_name: str
+    probability: float
 
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "records": [
-                    {
-                        "designation": "Console de jeu portable retro",
-                        "description": "400 jeux inclus, écran couleur",
-                        "productid": 123456,
-                        "imageid": 987654,
-                        "image_path": None,
-                    }
-                ]
-            }
-        }
-    }
 
 class PredictionItem(BaseModel):
     prediction: int
+    category_name: str
     probability: float
     model_version: str
+    flagged: bool
+    flag_reason: str | None = None
+    top3: list[CategoryScore]
+    image_used: bool
+    warnings: list[str] = Field(default_factory=list)
+    true_label: int | None = Field(
+        default=None, description="True category if the record gave one (optional)"
+    )
+    prediction_id: int | None = Field(
+        default=None, description="Row id in predictions; null if it could not be stored"
+    )
 
 
 class PredictResponse(BaseModel):
     count: int
+    flag_threshold: float
     results: list[PredictionItem]
+
+
+class FeedbackRequest(BaseModel):
+    """True category of an earlier prediction, sent once it is known."""
+
+    model_config = {"extra": "forbid"}
+
+    prediction_id: int = Field(gt=0)
+    true_label: int = Field(strict=True, description="One of the categories the model knows")
+
+
+class FeedbackResponse(BaseModel):
+    prediction_id: int
+    prediction: int
+    true_label: int
+    correct: bool
+    labeled_at: datetime
 
 
 # --------------------------------------------------------------------------- endpoints
@@ -273,9 +292,14 @@ async def training_trigger(background: BackgroundTasks) -> dict[str, Any]:
 
 @app.post("/predict", response_model=PredictResponse, tags=["model"])
 async def run_predict(request: PredictRequest) -> PredictResponse:
-    """Prédit la classe pour une ou plusieurs observations."""
+    """Prédit la classe pour 1 à 1000 observations.
+
+    Les enregistrements sont validés avant l'inférence : 422 si designation est
+    absente ou vide, ou si un champ inconnu est envoyé.
+    """
+    records = [record.model_dump() for record in request.records]
     try:
-        results = await run_in_threadpool(predict_module.predict, request.records)
+        results = await run_in_threadpool(predict_module.predict, records)
     except ModelNotFoundError as exc:
         # The model went away between startup and now; say so immediately
         # rather than waiting for the next training run to correct the gauge.
@@ -294,7 +318,27 @@ async def run_predict(request: PredictRequest) -> PredictResponse:
     # called from a DAG or the CLI.
     mon.observe_predictions(results)
 
-    return PredictResponse(count=len(results), results=results)
+    return PredictResponse(
+        count=len(results),
+        flag_threshold=predict_module.FLAG_THRESHOLD,
+        results=results,
+    )
+
+
+@app.post("/feedback", response_model=FeedbackResponse, tags=["model"])
+def submit_feedback(request: FeedbackRequest) -> dict[str, Any]:
+    """Store the true category of an earlier prediction (by its prediction_id).
+
+    The label goes to predictions.true_label only; it is never used as a model
+    input. Unknown prediction ids and unknown categories return 422; 409 when no
+    model is loaded (the known categories are read from the served model).
+    """
+    try:
+        return predict_module.record_feedback(request.prediction_id, request.true_label)
+    except ModelNotFoundError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 @app.get("/model", tags=["model"])

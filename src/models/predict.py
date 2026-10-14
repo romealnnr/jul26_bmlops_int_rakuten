@@ -19,10 +19,12 @@ import mlflow
 import mlflow.sklearn
 import pandas as pd
 from mlflow.tracking import MlflowClient
+from PIL import Image
 
-from src.config import settings, setup_logging
+from src.config import RAW_DATA_DIR, settings, setup_logging
 from src.data.db import Prediction, get_session
 from src.features.build_features import get_feature_columns, load_dataframe, prepare_frame
+from src.models.categories import category_name
 
 logger = logging.getLogger(__name__)
 
@@ -119,34 +121,125 @@ def _log_batch_to_mlflow(results: list[dict[str, Any]]) -> None:
         logger.warning("Journalisation MLflow du batch impossible : %s", exc)
 
 
-def predict(records: list[dict], 
-            log_to_db: bool = True, 
-            log_to_mlflow: bool = True) -> list[dict[str, Any]]:
+def _validate(records: list[dict]) -> list[dict[str, Any]]:
+    """Valide chaque observation avec le schéma de l'API (CLI et DAG compris).
+
+    Lève pydantic.ValidationError (sous-classe de ValueError) si designation est
+    absente ou vide, ou si un champ inconnu est présent.
+    """
+    from src.api.schemas import ProductRecord
+
+    return [ProductRecord.model_validate(record).model_dump() for record in records]
+
+
+def _check_image(image_path: str | None) -> tuple[str | None, str | None]:
+    """Return (usable absolute path, None) or (None, warning).
+
+    Only existing, readable image files inside the raw data folder are used. A
+    relative path is read relative to that folder. Anything else is reported, and
+    the model then sees no image (the image transformer encodes it as zeros).
+    """
+    if image_path is None or not str(image_path).strip():
+        return None, "no image_path: prediction uses text only"
+
+    raw_root = RAW_DATA_DIR.resolve()
+    candidate = Path(image_path)
+    if not candidate.is_absolute():
+        candidate = raw_root / candidate
+    resolved = candidate.resolve()
+
+    if not resolved.is_relative_to(raw_root):
+        return None, (
+            f"image_path outside the raw data folder: {image_path}; prediction uses text only"
+        )
+    if not resolved.is_file():
+        return None, f"image_path not found: {image_path}; prediction uses text only"
+    try:
+        with Image.open(resolved) as image:
+            image.verify()
+    except Exception:  # noqa: BLE001
+        return None, f"image_path unreadable: {image_path}; prediction uses text only"
+    return str(resolved), None
+
+
+def _known_categories(artifact: dict[str, Any]) -> set[int]:
+    """Categories (prdtypecode) the served model can predict."""
+    return {int(code) for code in artifact["pipeline"].classes_}
+
+
+def _true_label(value: Any, known: set[int]) -> int | None:
+    """Optional true category; when given it must be one the model knows."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value not in known:
+        raise ValueError(f"unknown true_label {value!r}; expected one of {sorted(known)}")
+    return value
+
+
+def predict(
+    records: list[dict], log_to_db: bool = True, log_to_mlflow: bool = True
+) -> list[dict[str, Any]]:
     """Prédit pour une liste d'observations et journalise le résultat."""
     if not records:
         raise ValueError("Aucune observation fournie")
+    records = _validate(records)
 
     artifact = load_artifact()
+    # Validated before the model runs, so a bad label never produces a stored row.
+    known = _known_categories(artifact)
+    true_labels = [_true_label(record.get("true_label"), known) for record in records]
     pipeline = artifact["pipeline"]
     feature_names: list[str] = artifact["feature_names"]
 
-    X = prepare_frame(records, feature_names)
-    labels = pipeline.predict(X)
+    # A missing or unusable image_path is never silently replaced by a blank image:
+    # only checked paths reach the model, and each result says whether its image was used.
+    model_rows, image_used, warnings_per_record = [], [], []
+    for record in records:
+        usable_path, image_warning = _check_image(record.get("image_path"))
+        model_rows.append({**record, "image_path": usable_path})
+        image_used.append(usable_path is not None)
+        warnings_per_record.append([image_warning] if image_warning else [])
+
+    X = prepare_frame(model_rows, feature_names)
     probabilities_matrix = pipeline.predict_proba(X)
+    # Column i of predict_proba is the class pipeline.classes_[i].
+    classes = [int(c) for c in pipeline.classes_]
 
     results = []
-    for label, proba_row in zip(labels, probabilities_matrix, strict=True):
-        probability = round(float(max(proba_row)), 6)
-        flagged = probability < FLAG_THRESHOLD
+    for proba_row, used, warnings, true_label in zip(
+        probabilities_matrix, image_used, warnings_per_record, true_labels, strict=True
+    ):
+        # The three most likely categories, best first. top3[0] is the prediction.
+        ranked = sorted(range(len(classes)), key=lambda i: proba_row[i], reverse=True)[:3]
+        top3 = [
+            {
+                "prediction": classes[i],
+                "category_name": category_name(classes[i]),
+                "probability": round(float(proba_row[i]), 6),
+            }
+            for i in ranked
+        ]
+        best = top3[0]
+        flagged = best["probability"] < FLAG_THRESHOLD
         results.append(
             {
-                "prediction": int(label),
-                "probability": probability,
+                "prediction": best["prediction"],
+                "category_name": best["category_name"],
+                "probability": best["probability"],
                 "model_version": artifact["version"],
                 "flagged": flagged,
                 "flag_reason": "low_confidence" if flagged else None,
+                "top3": top3,
+                "image_used": used,
+                "warnings": warnings,
+                "true_label": true_label,
+                "prediction_id": None,
             }
         )
+
+    n_without_image = image_used.count(False)
+    if n_without_image:
+        logger.warning("%d/%d record(s) predicted without an image", n_without_image, len(results))
 
     n_flagged = sum(1 for r in results if r["flagged"])
     if n_flagged:
@@ -156,28 +249,64 @@ def predict(records: list[dict],
                     FLAG_THRESHOLD)
 
     if log_to_db:
-        try:
-            with get_session() as session:
-                session.add_all(
-                    [
-                        Prediction(
-                            model_version=artifact["version"],
-                            features=record,
-                            prediction=result["prediction"],
-                            probability=result["probability"],
-                            flagged=result["flagged"],
-                            flag_reason=result["flag_reason"],
-                        )
-                        for record, result in zip(records, results, strict=True)
-                    ]
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Journalisation des prédictions impossible : %s", exc)
+        _store(records, results, artifact["version"])
 
     if log_to_mlflow:
         _log_batch_to_mlflow(results)
 
     return results
+
+
+def _store(records: list[dict], results: list[dict[str, Any]], version: str) -> None:
+    """Write one predictions row per result and copy the row id into the result."""
+    now = dt.now(UTC)
+    try:
+        with get_session() as session:
+            rows = [
+                Prediction(
+                    model_version=version,
+                    # The label is stored in its own column, never as a model input.
+                    features={k: v for k, v in record.items() if k != "true_label"},
+                    prediction=result["prediction"],
+                    probability=result["probability"],
+                    flagged=result["flagged"],
+                    flag_reason=result["flag_reason"],
+                    true_label=result["true_label"],
+                    labeled_at=now if result["true_label"] is not None else None,
+                )
+                for record, result in zip(records, results, strict=True)
+            ]
+            session.add_all(rows)
+            session.flush()  # assigns the ids
+            for row, result in zip(rows, results, strict=True):
+                result["prediction_id"] = row.id
+    except Exception as exc:  # noqa: BLE001
+        for result in results:
+            result["prediction_id"] = None
+        logger.warning("Journalisation des prédictions impossible : %s", exc)
+
+
+def record_feedback(prediction_id: int, true_label: int) -> dict[str, Any]:
+    """Set the true category of a stored prediction.
+
+    Raises ValueError for a category the served model does not know and
+    LookupError for an unknown prediction id.
+    """
+    true_label = _true_label(true_label, _known_categories(load_artifact()))
+    with get_session() as session:
+        row = session.get(Prediction, prediction_id)
+        if row is None:
+            raise LookupError(f"Unknown prediction_id: {prediction_id}")
+        row.true_label = true_label
+        row.labeled_at = dt.now(UTC)
+        return {
+            "prediction_id": row.id,
+            "prediction": row.prediction,
+            "true_label": row.true_label,
+            "correct": row.prediction == row.true_label,
+            "labeled_at": row.labeled_at,
+        }
+
 
 def sample_record() -> dict[str, Any]:
     """Construit une observation d'exemple à partir de la première ligne en base."""

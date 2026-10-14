@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, create_engine, func, select
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, create_engine, func, select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -63,6 +63,10 @@ class Prediction(Base):
     probability: Mapped[float | None] = mapped_column(Float, nullable=True)
     flagged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     flag_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # True category, when the caller knows it (in /predict or later via
+    # /feedback): without it live accuracy cannot be measured.
+    true_label: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    labeled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -111,6 +115,13 @@ class DriftMetric(Base):
 def init_db() -> None:
     """Crée les tables manquantes (idempotent)."""
     Base.metadata.create_all(bind=engine)
+    # create_all never alters an existing table: add the columns introduced
+    # later so a database created by an older version upgrades in place.
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE predictions ADD COLUMN IF NOT EXISTS true_label INTEGER"))
+        conn.execute(
+            text("ALTER TABLE predictions ADD COLUMN IF NOT EXISTS labeled_at TIMESTAMPTZ")
+        )
     logger.info("Schéma vérifié : %s", ", ".join(Base.metadata.tables))
 
 

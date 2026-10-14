@@ -55,3 +55,8 @@ def test_prediction_roundtrip() -> None:
         assert stored is not None
         assert stored.prediction == 1
         session.delete(stored)
+
+
+def test_predictions_have_true_label_columns() -> None:
+    columns = {c["name"] for c in inspect(engine).get_columns("predictions")}
+    assert {"true_label", "labeled_at"} <= columns
