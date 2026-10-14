@@ -189,6 +189,7 @@ class PredictionItem(BaseModel):
 
 class PredictResponse(BaseModel):
     count: int
+    flag_threshold: float
     results: list[PredictionItem]
 
 
@@ -293,7 +294,11 @@ async def run_predict(request: PredictRequest) -> PredictResponse:
     # called from a DAG or the CLI.
     mon.observe_predictions(results)
 
-    return PredictResponse(count=len(results), results=results)
+    return PredictResponse(
+        count=len(results),
+        flag_threshold=predict_module.FLAG_THRESHOLD,
+        results=results,
+    )
 
 
 @app.get("/model", tags=["model"])

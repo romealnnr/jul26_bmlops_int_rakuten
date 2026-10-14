@@ -43,9 +43,6 @@ DASHBOARDS = {
 }
 
 
-FLAG_THRESHOLD = float(os.getenv("FLAG_THRESHOLD", "0.6"))
-
-
 
 PRDTYPECODE_LABELS = {
     10:   "Used books",
