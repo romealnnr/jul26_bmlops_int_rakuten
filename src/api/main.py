@@ -201,17 +201,22 @@ class PredictResponse(BaseModel):
 # --------------------------------------------------------------------------- endpoints
 @app.get("/health", tags=["monitoring"])
 def health() -> dict[str, Any]:
-    """État de l'API, de la base et du modèle (vérifié via le MLflow Model Registry)."""
+    """État de l'API, de la base et du modèle (vérifié via le MLflow Model Registry).
+
+    Always 200: no model yet (fresh deployment) or an unreachable registry is
+    reported as model_available=false, never as a 500.
+    """
+    body: dict[str, Any] = {"status": "ok", "database": "up" if ping() else "down"}
     try:
         predict_module.model_info()
-        model_available = True
+        body["model_available"] = True
     except ModelNotFoundError:
-        model_available = False
-    return {
-        "status": "ok",
-        "database": "up" if ping() else "down",
-        "model_available": model_available,
-    }
+        body["model_available"] = False
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Model registry not reachable for /health: %s", exc)
+        body["model_available"] = False
+        body["model_error"] = str(exc)
+    return body
 
 
 @app.post("/training", response_model=TrainingResponse, tags=["model"])
