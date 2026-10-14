@@ -162,6 +162,20 @@ def _check_image(image_path: str | None) -> tuple[str | None, str | None]:
     return str(resolved), None
 
 
+def _known_categories(artifact: dict[str, Any]) -> set[int]:
+    """Categories (prdtypecode) the served model can predict."""
+    return {int(code) for code in artifact["pipeline"].classes_}
+
+
+def _true_label(value: Any, known: set[int]) -> int | None:
+    """Optional true category; when given it must be one the model knows."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value not in known:
+        raise ValueError(f"unknown true_label {value!r}; expected one of {sorted(known)}")
+    return value
+
+
 def predict(
     records: list[dict], log_to_db: bool = True, log_to_mlflow: bool = True
 ) -> list[dict[str, Any]]:
@@ -171,6 +185,9 @@ def predict(
     records = _validate(records)
 
     artifact = load_artifact()
+    # Validated before the model runs, so a bad label never produces a stored row.
+    known = _known_categories(artifact)
+    true_labels = [_true_label(record.get("true_label"), known) for record in records]
     pipeline = artifact["pipeline"]
     feature_names: list[str] = artifact["feature_names"]
 
@@ -189,8 +206,8 @@ def predict(
     classes = [int(c) for c in pipeline.classes_]
 
     results = []
-    for proba_row, used, warnings in zip(
-        probabilities_matrix, image_used, warnings_per_record, strict=True
+    for proba_row, used, warnings, true_label in zip(
+        probabilities_matrix, image_used, warnings_per_record, true_labels, strict=True
     ):
         # The three most likely categories, best first. top3[0] is the prediction.
         ranked = sorted(range(len(classes)), key=lambda i: proba_row[i], reverse=True)[:3]
@@ -215,6 +232,8 @@ def predict(
                 "top3": top3,
                 "image_used": used,
                 "warnings": warnings,
+                "true_label": true_label,
+                "prediction_id": None,
             }
         )
 
@@ -230,28 +249,64 @@ def predict(
                     FLAG_THRESHOLD)
 
     if log_to_db:
-        try:
-            with get_session() as session:
-                session.add_all(
-                    [
-                        Prediction(
-                            model_version=artifact["version"],
-                            features=record,
-                            prediction=result["prediction"],
-                            probability=result["probability"],
-                            flagged=result["flagged"],
-                            flag_reason=result["flag_reason"],
-                        )
-                        for record, result in zip(records, results, strict=True)
-                    ]
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Journalisation des prédictions impossible : %s", exc)
+        _store(records, results, artifact["version"])
 
     if log_to_mlflow:
         _log_batch_to_mlflow(results)
 
     return results
+
+
+def _store(records: list[dict], results: list[dict[str, Any]], version: str) -> None:
+    """Write one predictions row per result and copy the row id into the result."""
+    now = dt.now(UTC)
+    try:
+        with get_session() as session:
+            rows = [
+                Prediction(
+                    model_version=version,
+                    # The label is stored in its own column, never as a model input.
+                    features={k: v for k, v in record.items() if k != "true_label"},
+                    prediction=result["prediction"],
+                    probability=result["probability"],
+                    flagged=result["flagged"],
+                    flag_reason=result["flag_reason"],
+                    true_label=result["true_label"],
+                    labeled_at=now if result["true_label"] is not None else None,
+                )
+                for record, result in zip(records, results, strict=True)
+            ]
+            session.add_all(rows)
+            session.flush()  # assigns the ids
+            for row, result in zip(rows, results, strict=True):
+                result["prediction_id"] = row.id
+    except Exception as exc:  # noqa: BLE001
+        for result in results:
+            result["prediction_id"] = None
+        logger.warning("Journalisation des prédictions impossible : %s", exc)
+
+
+def record_feedback(prediction_id: int, true_label: int) -> dict[str, Any]:
+    """Set the true category of a stored prediction.
+
+    Raises ValueError for a category the served model does not know and
+    LookupError for an unknown prediction id.
+    """
+    true_label = _true_label(true_label, _known_categories(load_artifact()))
+    with get_session() as session:
+        row = session.get(Prediction, prediction_id)
+        if row is None:
+            raise LookupError(f"Unknown prediction_id: {prediction_id}")
+        row.true_label = true_label
+        row.labeled_at = dt.now(UTC)
+        return {
+            "prediction_id": row.id,
+            "prediction": row.prediction,
+            "true_label": row.true_label,
+            "correct": row.prediction == row.true_label,
+            "labeled_at": row.labeled_at,
+        }
+
 
 def sample_record() -> dict[str, Any]:
     """Construit une observation d'exemple à partir de la première ligne en base."""

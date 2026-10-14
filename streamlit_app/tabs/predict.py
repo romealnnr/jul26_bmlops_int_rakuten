@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 import streamlit as stlt
+from records import records_for_api
 
 from config import (
     API_IMAGE_ROOT,
@@ -24,7 +25,9 @@ EXAMPLE_RECORD = {
 }
 
 # Fields /predict accepts per record (src/api/schemas.py ProductRecord).
-API_RECORD_FIELDS = ["designation", "description", "productid", "imageid", "image_path"]
+API_RECORD_FIELDS = [
+    "designation", "description", "productid", "imageid", "image_path", "true_label",
+]
 
 
 def label(code) -> str:
@@ -274,7 +277,8 @@ def render():
 
     elif mode == "CSV batch":
         stlt.caption(
-            "CSV columns: designation, description, productid, imageid, image_path"
+            "CSV columns: designation, description, productid, imageid, image_path, "
+            "true_label (optional)"
         )
         file = stlt.file_uploader("CSV file", type="csv")
         if file is not None:
@@ -287,8 +291,7 @@ def render():
                 dropped = [c for c in sample.columns if c not in API_RECORD_FIELDS]
                 if dropped:
                     stlt.caption(f"Not sent to the API: {', '.join(map(str, dropped))}")
-                payload = sample[[c for c in API_RECORD_FIELDS if c in sample.columns]]
-                records = payload.where(payload.notna(), None).to_dict("records")
+                records = records_for_api(sample, API_RECORD_FIELDS)
                 ok, data = call_api("POST", "/predict", json={"records": records}, timeout=120)
                 if ok:
                     show_predictions(data)

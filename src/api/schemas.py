@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 MAX_RECORDS_PER_REQUEST = 1000
 
@@ -21,6 +21,10 @@ class ProductRecord(BaseModel):
     productid: int | None = Field(default=None, description="Catalogue id")
     imageid: int | None = Field(default=None, description="Image id")
     image_path: str | None = Field(default=None, description="Image file path")
+    true_label: StrictInt | None = Field(
+        default=None,
+        description="True category if known (stored with the prediction, never a model input)",
+    )
 
     @field_validator("designation")
     @classmethod
@@ -42,6 +46,7 @@ class PredictRequest(BaseModel):
                         "productid": 123456,
                         "imageid": 987654,
                         "image_path": None,
+                        "true_label": 2462,
                     }
                 ]
             }
