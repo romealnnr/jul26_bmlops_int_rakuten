@@ -114,9 +114,11 @@ venv/
 # --- Miniconda installer (traîne à la racine) ---
 Miniconda3-latest-Linux-x86_64.sh*
 
-# --- Sauvegardes de base de données ---
+# Database dumps can be huge and contain real data, so they stay ignored
+# wherever they are. The initdb scripts are configuration, not data: without
+# them a fresh clone cannot create the airflow database.
 *.sql
-mlops_backup_*.sql
+!docker/initdb/*.sql
 
 # --- Fichiers temporaires de test ---
 input.json
