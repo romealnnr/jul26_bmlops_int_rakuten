@@ -19,7 +19,7 @@ COPY src ./src
 RUN mkdir -p models reports src/data/raw mlruns /home/appuser/.cache/torch \
     && useradd --create-home --uid 1000 appuser \
     && mkdir -p /home/appuser/.cache/torch \
-    && chown -R appuser:appuser /app /home/appuser/.cache
+    && chown -R appuser:appuser /app /home/appuser/.cache /home/appuser
 USER appuser
 
 EXPOSE 8000
