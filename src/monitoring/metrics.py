@@ -36,6 +36,7 @@ Three deliberate choices:
 from __future__ import annotations
 
 import time
+from datetime import UTC
 
 from prometheus_client import Counter, Gauge, Histogram
 
@@ -145,7 +146,7 @@ def _as_timestamp(value) -> float:
     datetime before; accepting both costs three lines and avoids a metric
     that breaks on a change nobody thought was breaking.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     if isinstance(value, (int, float)):
         return float(value)
@@ -156,7 +157,7 @@ def _as_timestamp(value) -> float:
         parsed = value
 
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.timestamp()
 
 
@@ -231,7 +232,7 @@ def _latest_drift() -> tuple[float, float, float]:
     alert elsewhere; what this function must never do is take the whole
     /metrics endpoint down with it.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import func, select
 
@@ -261,8 +262,8 @@ def _latest_drift() -> tuple[float, float, float]:
                 ).all()
 
                 if latest.tzinfo is None:
-                    latest = latest.replace(tzinfo=timezone.utc)
-                age = (datetime.now(timezone.utc) - latest).total_seconds()
+                    latest = latest.replace(tzinfo=UTC)
+                age = (datetime.now(UTC) - latest).total_seconds()
 
                 total = len(rows)
                 drifted = sum(

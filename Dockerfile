@@ -16,9 +16,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY pyproject.toml ./
 COPY src ./src
 
-RUN mkdir -p models reports src/data/raw mlruns \
+RUN mkdir -p models reports src/data/raw mlruns /home/appuser/.cache/torch \
     && useradd --create-home --uid 1000 appuser \
-    && chown -R appuser:appuser /app
+    && chown -R appuser:appuser /app /home/appuser
 USER appuser
 
 EXPOSE 8000

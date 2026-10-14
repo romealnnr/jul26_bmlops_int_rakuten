@@ -99,32 +99,114 @@ def _get_production_version(client: MlflowClient, model_name: str):
     return version.version, run.data.metrics
 
 
+def _score_champion_on(model_name: str, X_test, y_test) -> float | None:
+    """Score the Production model on the test set the challenger was just judged on.
+
+    This is the whole point of the change. Every training run splits its own
+    batch and reports a metric measured on its own test rows, so comparing a
+    challenger's number against the champion's stored number compares two
+    exams sat on different papers.
+
+    It matters most in exactly the situation the system is built to handle.
+    When the data drifts, a model trained on the new distribution faces harder
+    - or simply different - test rows, so it can score lower than a champion
+    that was graded on older, easier ones, and be rejected for having adapted.
+    The retraining loop would then spin without ever changing the served model.
+
+    Returns None when the champion cannot be loaded or scored; the caller then
+    falls back to the stored metric and says so, rather than silently promoting.
+    """
+    try:
+        champion = mlflow.sklearn.load_model(f"models:/{model_name}/Production")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Champion model could not be loaded for comparison: %s", exc)
+        return None
+
+    try:
+        y_pred = champion.predict(X_test)
+    except Exception as exc:  # noqa: BLE001
+        # A champion that cannot predict on current data is not a valid
+        # comparison - but it is also a finding worth seeing in the logs.
+        logger.warning("Champion model could not predict on the current test set: %s", exc)
+        return None
+
+    return round(float(f1_score(y_test, y_pred, average="weighted", zero_division=0)), 4)
+
+
 def _compare_and_promote(
     client: MlflowClient,
     model_name: str,
     new_version: str,
     new_metrics: dict[str, Any],
+    X_test,
+    y_test,
 ) -> dict[str, Any]:
-    """Loads the current Production version, compares it to the new model on 
-    PRIMARY_METRIC, and promotes/demotes accordingly. 
-    A 'best_model' tag is set on each version for quick reading without querying the stages."""
+    """Compare challenger and champion on the SAME test set, then promote or reject.
+
+    Both models are scored on the test rows of the batch that was just
+    processed - that is, on current data. The question the registry answers
+    becomes "which model handles today's data better?" instead of "who got a
+    higher mark on their own paper?".
+
+    The challenger was trained on rows from this same batch, so it does have
+    an advantage here. That is intended: when the data has moved, the model
+    that matches the new distribution is the one that should win, and that is
+    precisely what this comparison rewards.
+
+    ASSUMPTION, stated here on purpose. A production system would also hold
+    the older data to account: a model that handles today's batch well but has
+    forgotten everything before it is not obviously the better model, and the
+    honest evaluation set would mix the recent rows with a sample of the
+    history. We judge on the current batch alone, which keeps a training cycle
+    at minutes instead of hours and suits a pipeline whose stated job is to
+    follow the newest slice. It is a deliberate simplification, not an
+    oversight: in a setting where the past still matters, this test set is the
+    first thing that should change.
+
+    A 'best_model' tag is set on each version for quick reading without
+    querying the stages."""
     prev_version, prev_metrics = _get_production_version(client, model_name)
     new_score = new_metrics[PRIMARY_METRIC]
-    prev_score = prev_metrics.get(PRIMARY_METRIC) if prev_metrics else None
+
+    # What the champion reported when it was trained, kept only so the two
+    # numbers can be read side by side. It is NOT what the decision uses.
+    prev_logged_score = prev_metrics.get(PRIMARY_METRIC) if prev_metrics else None
+    prev_score = None
+    basis = "no_previous_model"
+
+    if prev_version is not None:
+        prev_score = _score_champion_on(model_name, X_test, y_test)
+        if prev_score is not None:
+            basis = "same_test_set"
+        else:
+            # Fall back rather than promote blindly, and record that we did.
+            prev_score = prev_logged_score
+            basis = "champion_logged_metric_fallback"
 
     if prev_version is None:
         decision, reason, is_best = "promoted", "No model in Production: first promotion.", True
+    elif prev_score is None:
+        decision = "promoted"
+        reason = "Champion could not be evaluated and reported no stored metric."
+        is_best = True
     elif new_score > prev_score:
         decision = "promoted"
-        reason = f"Nouveau {PRIMARY_METRIC}={new_score:.4f} > précédent {prev_score:.4f}."
+        reason = (
+            f"New {PRIMARY_METRIC}={new_score:.4f} > champion {prev_score:.4f} "
+            f"on the same test set ({len(y_test)} current rows)."
+        )
         is_best = True
     else:
         decision = "rejected"
-        reason = f"Nouveau {PRIMARY_METRIC}={new_score:.4f} <= précédent {prev_score:.4f}."
+        reason = (
+            f"New {PRIMARY_METRIC}={new_score:.4f} <= champion {prev_score:.4f} "
+            f"on the same test set ({len(y_test)} current rows)."
+        )
         is_best = False
 
     client.set_model_version_tag(model_name, new_version, "best_model", "true" if is_best else "false")
     client.set_model_version_tag(model_name, new_version, PRIMARY_METRIC, str(new_score))
+    client.set_model_version_tag(model_name, new_version, "comparison_basis", basis)
 
     # transition_model_version_stage is marked as “legacy” in recent MLflow versions
     # (replaced by aliases) but remains functional and widely used.
@@ -145,7 +227,12 @@ def _compare_and_promote(
         "new_version": new_version,
         "new_score": new_score,
         "previous_version": prev_version,
+        # Champion re-scored on this batch's test rows - the number that decided.
         "previous_score": prev_score,
+        # Champion's own number from its own training run, for reference only.
+        "previous_score_logged": prev_logged_score,
+        "comparison_basis": basis,
+        "evaluated_on_rows": int(len(y_test)),
         "metric": PRIMARY_METRIC,
     }
 
@@ -267,7 +354,9 @@ def train(
     new_model_version = registered.version
 
     client = MlflowClient()
-    comparison = _compare_and_promote(client, settings.mlflow_registered_model_name, new_model_version, metrics)
+    comparison = _compare_and_promote(
+        client, settings.mlflow_registered_model_name, new_model_version, metrics, X_test, y_test,
+    )
     new_model_version = str(new_model_version)
 
     if continuous and batch_max_id is not None:

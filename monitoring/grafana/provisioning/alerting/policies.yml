@@ -1,0 +1,34 @@
+# Notification policy tree, provisioned as a file.
+#
+# Only one alert is routed to the retraining webhook: data drift. The other
+# three describe situations a retrain cannot fix - a missing model, a dead
+# drift monitor, failing training runs - and firing a training run at them
+# would be noise at best and a loop at worst.
+#
+# `repeat_interval: 6h` is the second brake on retraining storms, after the
+# in-progress lock in the endpoint itself. Drift does not disappear the moment
+# a model is retrained: the alert stays firing until the next drift report is
+# computed on a new window. Without a long repeat interval Grafana would keep
+# re-notifying, and the webhook would keep being called for a condition that
+# is already being dealt with.
+#
+# `group_wait` and `group_interval` are deliberately slow for the same reason.
+# Nothing here is urgent at the second scale; a training run takes minutes.
+#
+# Note: provisioning a policy tree replaces the whole tree, and it cannot be
+# edited in the UI afterwards. The default route is kept as the root so that
+# every other alert behaves exactly as it did before.
+
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: grafana-default-email
+    group_by: ["grafana_folder", "alertname"]
+    routes:
+      - receiver: rakuten-retrain
+        object_matchers:
+          - ["alertname", "=", "Data drift above threshold"]
+        group_wait: 1m
+        group_interval: 10m
+        repeat_interval: 6h
