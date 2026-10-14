@@ -67,7 +67,7 @@ fusionnés dans un pipeline scikit-learn, classifieur Régression Logistique.
 
 ## 2. Configuration (`.env`)
 
-Créer un fichier `.env` à la racine du projet (voir `.env.example` si présent) :
+Créer un fichier `.env` à la racine du projet (voir `.env_example`) :
 
 ```env
 POSTGRES_USER=<ton_user>
