@@ -1,11 +1,36 @@
 name: python-app
 
+# Runs on the team branch (master) and on main, and on every pull request.
 on:
   push:
-    branches: [main]
+    branches: [master, main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch cancels the run that is still going.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install "ruff==0.13.3"
+
+      - name: Ruff
+        run: ruff check --output-format=github src
+
   test:
     runs-on: ubuntu-latest
 
@@ -23,32 +48,40 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+    # Every setting src/config.py requires (it has no defaults), so importing src
+    # works in CI. CI-only values, no real secret.
     env:
       POSTGRES_USER: mlops
       POSTGRES_PASSWORD: mlops_password
       POSTGRES_DB: mlops
       POSTGRES_HOST: localhost
       POSTGRES_PORT: 5432
+      MODEL_NAME: baseline_logreg
+      TARGET_COLUMN: target
+      TEST_SIZE: "0.2"
+      RANDOM_STATE: "42"
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
+      LOG_LEVEL: INFO
+      MLFLOW_EXPERIMENT_NAME: rakuten-baseline-v2
+      MLFLOW_REGISTERED_MODEL_NAME: rakuten_baseline
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Install
-        run: pip install -e ".[dev]"
+        # requirements.txt first: the API modules the tests import need evidently,
+        # prometheus-fastapi-instrumentator and torch, which pyproject does not list.
+        run: |
+          pip install -r requirements.txt
+          pip install -e ".[dev]"
 
-      - name: Lint
-        run: ruff check src
-
-      - name: Ingest data
-        run: python -m src.data.make_dataset
-
-      - name: Train baseline
-        run: python -m src.models.training
-
+      # No ingest or training step: CI has no Rakuten dataset. The database
+      # tests use the Postgres service above.
       - name: Tests
         run: pytest
