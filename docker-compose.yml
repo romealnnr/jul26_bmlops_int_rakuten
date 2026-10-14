@@ -75,6 +75,11 @@ services:
       AIRFLOW__API_AUTH__JWT_ISSUER: airflow
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      # Airflow metrics -> statsd-exporter -> Prometheus (job "airflow").
+      AIRFLOW__METRICS__STATSD_ON: "True"
+      AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
+      AIRFLOW__METRICS__STATSD_PORT: "9125"
+      AIRFLOW__METRICS__STATSD_PREFIX: airflow
     user: "${AIRFLOW_UID}:0"
     command:
       - db
@@ -153,6 +158,31 @@ services:
       - "9090:9090"
     depends_on:
       - api
+      - postgres-exporter
+      - statsd-exporter
+
+  # Exporters, so that Postgres and Airflow are monitored too.
+  # Internal only: Prometheus scrapes them on the compose network.
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.20.1
+    container_name: postgres_exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+
+  statsd-exporter:
+    image: prom/statsd-exporter:v0.31.0
+    container_name: statsd_exporter
+    restart: unless-stopped
+    command:
+      - --statsd.mapping-config=/etc/statsd/statsd_mapping.yml
+      - --statsd.listen-udp=:9125
+      - --web.listen-address=:9102
+    volumes:
+      - ./monitoring/prometheus/statsd_mapping.yml:/etc/statsd/statsd_mapping.yml:ro
 
   grafana:
     image: grafana/grafana:11.3.0
@@ -169,6 +199,16 @@ services:
       GF_SECURITY_ALLOW_EMBEDDING: "true"
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # Alert delivery (monitoring/grafana/provisioning/alerting/contactpoints.yml).
+      # Clearly fake defaults: set real values in .env to receive alerts.
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-rakuten-alerts@example.invalid}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-http://alert-sink.invalid/rakuten}
+      # E-mail delivery needs SMTP; off unless GF_SMTP_ENABLED=true in .env.
+      GF_SMTP_ENABLED: ${GF_SMTP_ENABLED:-false}
+      GF_SMTP_HOST: ${GF_SMTP_HOST:-}
+      GF_SMTP_USER: ${GF_SMTP_USER:-}
+      GF_SMTP_PASSWORD: ${GF_SMTP_PASSWORD:-}
+      GF_SMTP_FROM_ADDRESS: ${GF_SMTP_FROM_ADDRESS:-}
     volumes:
       - grafana_data:/var/lib/grafana
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning

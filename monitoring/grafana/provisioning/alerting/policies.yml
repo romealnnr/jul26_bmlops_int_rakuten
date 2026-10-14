@@ -16,19 +16,27 @@
 # Nothing here is urgent at the second scale; a training run takes minutes.
 #
 # Note: provisioning a policy tree replaces the whole tree, and it cannot be
-# edited in the UI afterwards. The default route is kept as the root so that
-# every other alert behaves exactly as it did before.
+# edited in the UI afterwards. The root receiver is rakuten-team
+# (contactpoints.yml), so every alert, including drift, reaches people. It
+# used to be grafana-default-email, which has no real address: alerts fired
+# and reached nobody. A matching child route takes the alert away from the
+# root receiver, so drift needs its own second route to rakuten-team;
+# `continue: true` on the retrain route lets the alert reach that sibling.
 
 apiVersion: 1
 
 policies:
   - orgId: 1
-    receiver: grafana-default-email
+    receiver: rakuten-team
     group_by: ["grafana_folder", "alertname"]
     routes:
       - receiver: rakuten-retrain
         object_matchers:
           - ["alertname", "=", "Data drift above threshold"]
+        continue: true
         group_wait: 1m
         group_interval: 10m
         repeat_interval: 6h
+      - receiver: rakuten-team
+        object_matchers:
+          - ["alertname", "=", "Data drift above threshold"]

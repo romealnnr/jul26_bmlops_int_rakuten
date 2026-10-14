@@ -124,6 +124,21 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 7,
+      "title": "Scrape targets (api, prometheus, grafana, postgres, airflow)",
+      "description": "up per Prometheus job: 1 when the target answered the last scrape. postgres is postgres-exporter (pg_up shows the database itself); airflow is statsd-exporter (the scheduler heartbeat shows Airflow itself).",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus_ds"},
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 16},
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name", "colorMode": "background"},
+      "targets": [
+        {"expr": "up", "legendFormat": "{{job}}", "refId": "A", "instant": true},
+        {"expr": "min(pg_up)", "legendFormat": "postgres database (pg_up)", "refId": "B", "instant": true},
+        {"expr": "clamp_max(sum(rate(airflow_scheduler_heartbeat[5m])) * 1000, 1)", "legendFormat": "airflow scheduler heartbeat", "refId": "C", "instant": true}
+      ]
     }
   ]
 }

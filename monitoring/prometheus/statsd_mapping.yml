@@ -1,0 +1,41 @@
+# statsd-exporter mapping for Airflow 3 StatsD metrics.
+#
+# Airflow (with AIRFLOW__METRICS__STATSD_ON=True, STATSD_PREFIX=airflow) sends
+# dotted StatsD names such as airflow.ti.finish.<dag_id>.<task_id>.<state>.
+# Without a mapping, statsd-exporter turns each distinct DAG and task into its
+# own metric name. These rules turn the parts we alert or graph on into labels.
+# Timers are sent in milliseconds; statsd-exporter exposes them in seconds.
+# Unmapped metrics are still exported with dots replaced by underscores.
+
+mappings:
+  - match: "airflow.scheduler_heartbeat"
+    name: "airflow_scheduler_heartbeat"
+
+  - match: "airflow.dagrun.duration.*.*"
+    name: "airflow_dagrun_duration"
+    labels:
+      state: "$1"
+      dag_id: "$2"
+
+  - match: "airflow.ti.finish.*.*.*"
+    name: "airflow_ti_finish"
+    labels:
+      dag_id: "$1"
+      task_id: "$2"
+      state: "$3"
+
+  - match: "airflow.dag.*.*.duration"
+    name: "airflow_task_duration"
+    labels:
+      dag_id: "$1"
+      task_id: "$2"
+
+  - match: "airflow.dag_processing.last_duration.*"
+    name: "airflow_dag_processing_last_duration"
+    labels:
+      dag_file: "$1"
+
+  - match: "airflow.pool.open_slots.*"
+    name: "airflow_pool_open_slots"
+    labels:
+      pool: "$1"
