@@ -218,19 +218,41 @@ services:
     depends_on:
       - api
 
+  # MLflow web UI on http://localhost:5000: experiments, runs, registered models
+  # and their aliases. Same image as the api, same Postgres backend, and the same
+  # ./mlruns folder (read-only here: the api writes artifacts, the UI only reads).
   mlflow-ui:
     build:
       context: .
-      dockerfile: Dockerfile   # copy from the service at line 33
+      dockerfile: Dockerfile
+    container_name: mlops_mlflow_ui
+    restart: unless-stopped
+    # --default-artifact-root + --no-serve-artifacts: artifacts are read straight
+    #   from /app/mlruns, the path the api logs them to, so they show in the UI.
+    # --workers 1: about 2 GB RAM idle instead of about 4 GB with the default 4.
+    # --x-frame-options NONE: lets Streamlit (localhost:8501) embed the UI.
     command: >
       mlflow server
       --backend-store-uri postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      --host 0.0.0.0 --port 5000
+      --default-artifact-root /app/mlruns
+      --no-serve-artifacts
+      --host 0.0.0.0 --port 5000 --workers 1
       --x-frame-options NONE
     ports:
-      - "5000:5000"
+      # Loopback only by default: the server has no login and its REST API can
+      # move the @champion alias. MLFLOW_BIND_ADDRESS=0.0.0.0 in .env opens it.
+      - "${MLFLOW_BIND_ADDRESS:-127.0.0.1}:5000:5000"
+    volumes:
+      - ./mlruns:/app/mlruns:ro
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
 
 volumes:
   pgdata:

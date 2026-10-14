@@ -188,6 +188,12 @@ docker compose up -d --build
 
 ```
 
+MLflow UI: <http://localhost:5000> (service `mlflow-ui`): experiments, runs,
+artifacts and the model registry (aliases such as `@champion`). It has no login
+and anyone who reaches it can move `@champion`, so port 5000 is published on
+127.0.0.1 only (`MLFLOW_BIND_ADDRESS` in `.env`). On recent macOS port 5000 is
+taken by AirPlay Receiver; switch that off or change the host port.
+
 > ⚠️ `docker compose build` alone does not recreate the running container —
 always use docker compose up -d --build after code changes, otherwise
 exec commands will still run on the old container.
