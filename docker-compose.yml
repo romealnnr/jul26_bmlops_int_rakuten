@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine
     container_name: mlops_db
     restart: unless-stopped
     env_file: .env
@@ -143,7 +143,7 @@ services:
 
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.15.0
     container_name: prometheus
     restart: unless-stopped
     volumes:
@@ -178,6 +178,9 @@ services:
       - db
 
   streamlit:
+    # Named like a pinned image, so the built image is identifiable in
+    # `docker images` instead of an auto-generated <project>-streamlit.
+    image: jul26-rakuten-streamlit:local
     build: ./streamlit_app
     container_name: mlops_streamlit
     restart: unless-stopped

@@ -1,64 +1,11 @@
-Project Name
-==============================
+# jul26_bmlops_int_rakuten: Rakuten product classification (MLOps)
 
-This project is a starting Pack for MLOps projects based on the subject "movie_recommandation". It's not perfect so feel free to make some modifications on it.
-
-Project Organization
-------------
-
-    ├── LICENSE
-    ├── README.md          <- The top-level README for developers using this project.
-    ├── data
-    │   ├── external       <- Data from third party sources.
-    │   ├── interim        <- Intermediate data that has been transformed.
-    │   ├── processed      <- The final, canonical data sets for modeling.
-    │   └── raw            <- The original, immutable data dump.
-    │
-    ├── logs               <- Logs from training and predicting
-    │
-    ├── models             <- Trained and serialized models, model predictions, or model summaries
-    │
-    ├── notebooks          <- Jupyter notebooks. Naming convention is a number (for ordering),
-    │                         the creator's initials, and a short `-` delimited description, e.g.
-    │                         `1.0-jqp-initial-data-exploration`.
-    │
-    ├── references         <- Data dictionaries, manuals, and all other explanatory materials.
-    │
-    ├── reports            <- Generated analysis as HTML, PDF, LaTeX, etc.
-    │   └── figures        <- Generated graphics and figures to be used in reporting
-    │
-    ├── requirements.txt   <- The requirements file for reproducing the analysis environment, e.g.
-    │                         generated with `pip freeze > requirements.txt`
-    │
-    ├── src                <- Source code for use in this project.
-    │   ├── __init__.py    <- Makes src a Python module
-    │   │
-    │   ├── data           <- Scripts to download or generate data
-    │   │   └── make_dataset.py
-    │   │
-    │   ├── features       <- Scripts to turn raw data into features for modeling
-    │   │   └── build_features.py
-    │   │
-    │   ├── models         <- Scripts to train models and then use trained models to make
-    │   │   │                 predictions
-    │   │   ├── predict_model.py
-    │   │   └── train_model.py
-    │   │
-    │   ├── visualization  <- Scripts to create exploratory and results oriented visualizations
-    │   │   └── visualize.py
-    │   └── config         <- Describe the parameters used in train_model.py and predict_model.py
-
---------
-
-<p><small>Project based on the <a target="_blank" href="https://drivendata.github.io/cookiecutter-data-science/">cookiecutter data science project template</a>. #cookiecutterdatascience</small></p>
---------------------------------------------------------------------------------------------------------------------------------------------
-
-# jul26_bmlops_int_rakuten — Phase 1
-
-Classification multiclasse des produits Rakuten (`prdtypecode`, ~27 classes) à
-partir du texte (`designation`, `description`) et de l'image du produit.
-Baseline **multimodal** : TF-IDF (texte) + embeddings ResNet18 gelé (image),
-fusionnés dans un pipeline scikit-learn, classifieur Régression Logistique.
+Multiclass classification of Rakuten products (`prdtypecode`, 27 classes) from the
+product text (`designation`, `description`) and the product image.
+Multimodal baseline: TF-IDF (text) and frozen ResNet18 embeddings (image), combined in
+a scikit-learn pipeline with a logistic-regression classifier. The stack around it:
+PostgreSQL, FastAPI, MLflow tracking and registry, Airflow continuous training,
+Evidently drift, Prometheus, Grafana and a Streamlit front end, all in Docker Compose.
 
 ## 1. Prerequisites
 
@@ -265,12 +212,25 @@ Common causes: missing dependency in requirements.txt (ModuleNotFoundError), bro
 - Ensure the file was saved, then use
 docker compose up -d --build (not just docker compose build).
 
-## 9. Objectives and metrics (Phase 1 recap))
+## 9. Objectives and metrics
 
-* Main metric: weighted F1‑score (imbalanced classes)
+* Main metric: weighted F1-score (imbalanced classes)
 * Baseline target: > 0.65
-* Obtained result (full dataset, text + image):
-    accuracy ≈ 0.822, weighted_f1 ≈ 0.824
+* Score of the model the API serves right now: read it from the stack, not from this file.
+  `curl http://localhost:8000/model` returns the `metrics` block (accuracy, weighted_f1,
+  weighted_precision, weighted_recall) of the served model, and the same values are logged
+  on its MLflow run.
+
+> Earlier versions of this README quoted accuracy ≈ 0.822 and weighted_f1 ≈ 0.824
+> ("full dataset, text + image"). That figure was removed because it does not describe
+> the model this code serves:
+> - it came from one training on the full dataset, while continuous training (the
+>   Airflow DAG `rakuten_continuous_training`, or `python -m src.models.training --continuous`)
+>   trains each model on batches of `CONTINUOUS_BATCH_SIZE = 3000` new rows
+>   (`src/models/training.py`), so the served model's score is not comparable to it;
+> - it was measured with `productid` and `imageid` among the model inputs. These
+>   catalogue identifiers can carry the category on their own, so a score from a
+>   model that uses them may overstate how well it classifies new products.
 
 ## 10. Pipeline architecture
 
