@@ -1,6 +1,8 @@
 import streamlit as stlt
 import streamlit.components.v1 as components
+
 from config import DASHBOARDS
+
 
 def render():
     name = stlt.radio("Dashboard", list(DASHBOARDS), horizontal=True)

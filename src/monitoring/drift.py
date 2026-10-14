@@ -86,7 +86,10 @@ def compute_drift(current_max_id: int) -> dict:
                 threshold=float(threshold) if threshold is not None else None,
             )
             session.add(row)
-            saved.append({"column": column_name, "method": method, "score": score, "threshold": threshold})
+            saved.append({"column": column_name, 
+                          "method": method, 
+                          "score": score, 
+                          "threshold": threshold})
         session.commit()
 
     logger.info("Drift calculé (%s vs %s) : %d colonnes", reference_desc, current_desc, len(saved))

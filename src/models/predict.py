@@ -10,7 +10,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from datetime import timezone, datetime as dt
+from datetime import UTC
+from datetime import datetime as dt
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ import mlflow
 import mlflow.sklearn
 import pandas as pd
 from mlflow.tracking import MlflowClient
+
 from src.config import settings, setup_logging
 from src.data.db import Prediction, get_session
 from src.features.build_features import get_feature_columns, load_dataframe, prepare_frame
@@ -46,7 +48,8 @@ def load_artifact(force_reload: bool = False) -> dict[str, Any]:
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
     client = MlflowClient()
 
-    versions = client.get_latest_versions(settings.mlflow_registered_model_name, stages=["Production"])
+    versions = client.get_latest_versions(settings.mlflow_registered_model_name,
+                                          stages=["Production"])
     if not versions:
         raise ModelNotFoundError(
             f"Aucun modèle en Production pour '{settings.mlflow_registered_model_name}'. "
@@ -64,7 +67,7 @@ def load_artifact(force_reload: bool = False) -> dict[str, Any]:
         "version": run.data.tags.get("version", str(version_info.version)),
         "mlflow_model_version": str(version_info.version),
         "mlflow_run_id": version_info.run_id,
-        "trained_at": dt.fromtimestamp(run.info.start_time / 1000, tz=timezone.utc).isoformat(),
+        "trained_at": dt.fromtimestamp(run.info.start_time / 1000, tz=UTC).isoformat(),
         "feature_names": get_feature_columns(None),
         "metrics": dict(run.data.metrics),
     }
@@ -116,7 +119,9 @@ def _log_batch_to_mlflow(results: list[dict[str, Any]]) -> None:
         logger.warning("Journalisation MLflow du batch impossible : %s", exc)
 
 
-def predict(records: list[dict], log_to_db: bool = True, log_to_mlflow: bool = True) -> list[dict[str, Any]]:
+def predict(records: list[dict], 
+            log_to_db: bool = True, 
+            log_to_mlflow: bool = True) -> list[dict[str, Any]]:
     """Prédit pour une liste d'observations et journalise le résultat."""
     if not records:
         raise ValueError("Aucune observation fournie")
@@ -145,7 +150,10 @@ def predict(records: list[dict], log_to_db: bool = True, log_to_mlflow: bool = T
 
     n_flagged = sum(1 for r in results if r["flagged"])
     if n_flagged:
-        logger.info("%d/%d prédiction(s) flaggée(s) (confiance < %.2f)", n_flagged, len(results), FLAG_THRESHOLD)
+        logger.info("%d/%d prédiction(s) flaggée(s) (confiance < %.2f)", 
+                    n_flagged, 
+                    len(results), 
+                    FLAG_THRESHOLD)
 
     if log_to_db:
         try:
