@@ -24,6 +24,10 @@ EXAMPLE_RECORD = {
     "image_path": None,
 }
 
+# Fields /predict accepts per record (src/api/schemas.py ProductRecord).
+API_RECORD_FIELDS = ["designation", "description", "productid", "imageid", "image_path"]
+
+
 def label(code) -> str:
     try:
         return f"{int(code)} ({PRDTYPECODE_LABELS.get(int(code), 'unknown')})"
@@ -278,7 +282,12 @@ def render():
             max_rows = stlt.number_input("Max rows to send", 1, 1000, min(len(df), 100))
             if stlt.button("Predict batch"):
                 sample = df.head(int(max_rows)).astype(object)
-                records = sample.where(sample.notna(), None).to_dict("records")
+                # /predict rejects unknown fields (422): send only the accepted columns.
+                dropped = [c for c in sample.columns if c not in API_RECORD_FIELDS]
+                if dropped:
+                    stlt.caption(f"Not sent to the API: {', '.join(map(str, dropped))}")
+                payload = sample[[c for c in API_RECORD_FIELDS if c in sample.columns]]
+                records = payload.where(payload.notna(), None).to_dict("records")
                 ok, data = call_api("POST", "/predict", json={"records": records}, timeout=120)
                 if ok:
                     show_predictions(data)

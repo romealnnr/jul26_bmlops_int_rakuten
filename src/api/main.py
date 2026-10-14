@@ -12,6 +12,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from src.api.schemas import PredictRequest
 from src.config import ensure_dirs, setup_logging
 from src.data.db import init_db, ping
 from src.models import predict as predict_module
@@ -168,25 +169,6 @@ class TrainingResponse(BaseModel):
     comparison: dict[str, Any] | None = None
 
 
-class PredictRequest(BaseModel):
-    records: list[dict[str, Any]] = Field(min_length=1)
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "records": [
-                    {
-                        "designation": "Console de jeu portable retro",
-                        "description": "400 jeux inclus, écran couleur",
-                        "productid": 123456,
-                        "imageid": 987654,
-                        "image_path": None,
-                    }
-                ]
-            }
-        }
-    }
-
 class PredictionItem(BaseModel):
     prediction: int
     probability: float
@@ -273,9 +255,14 @@ async def training_trigger(background: BackgroundTasks) -> dict[str, Any]:
 
 @app.post("/predict", response_model=PredictResponse, tags=["model"])
 async def run_predict(request: PredictRequest) -> PredictResponse:
-    """Prédit la classe pour une ou plusieurs observations."""
+    """Prédit la classe pour 1 à 1000 observations.
+
+    Les enregistrements sont validés avant l'inférence : 422 si designation est
+    absente ou vide, ou si un champ inconnu est envoyé.
+    """
+    records = [record.model_dump() for record in request.records]
     try:
-        results = await run_in_threadpool(predict_module.predict, request.records)
+        results = await run_in_threadpool(predict_module.predict, records)
     except ModelNotFoundError as exc:
         # The model went away between startup and now; say so immediately
         # rather than waiting for the next training run to correct the gauge.

@@ -119,12 +119,24 @@ def _log_batch_to_mlflow(results: list[dict[str, Any]]) -> None:
         logger.warning("Journalisation MLflow du batch impossible : %s", exc)
 
 
-def predict(records: list[dict], 
-            log_to_db: bool = True, 
-            log_to_mlflow: bool = True) -> list[dict[str, Any]]:
+def _validate(records: list[dict]) -> list[dict[str, Any]]:
+    """Valide chaque observation avec le schéma de l'API (CLI et DAG compris).
+
+    Lève pydantic.ValidationError (sous-classe de ValueError) si designation est
+    absente ou vide, ou si un champ inconnu est présent.
+    """
+    from src.api.schemas import ProductRecord
+
+    return [ProductRecord.model_validate(record).model_dump() for record in records]
+
+
+def predict(
+    records: list[dict], log_to_db: bool = True, log_to_mlflow: bool = True
+) -> list[dict[str, Any]]:
     """Prédit pour une liste d'observations et journalise le résultat."""
     if not records:
         raise ValueError("Aucune observation fournie")
+    records = _validate(records)
 
     artifact = load_artifact()
     pipeline = artifact["pipeline"]
