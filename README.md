@@ -98,7 +98,18 @@ AIRFLOW_JWT_SECRET=<create a key>
 # Airflow web login (http://localhost:8081)
 AIRFLOW_ADMIN_USER=admin
 AIRFLOW_ADMIN_PASSWORD=<choose a password>
+
+# --- Grafana ---
+# Required: docker compose refuses to start without it (no admin/admin fallback).
+GRAFANA_ADMIN_PASSWORD=<choose a password>
 ```
+
+> Postgres (`POSTGRES_PORT`) and Grafana (port 3000) are published on 127.0.0.1
+only, so they are reachable from this machine but not from the network. To open
+Grafana to the network on purpose, set `GRAFANA_BIND_ADDRESS=0.0.0.0` in `.env`.
+Grafana reads `GRAFANA_ADMIN_PASSWORD` only when its data volume is first created;
+on an existing volume set it with
+`docker compose exec grafana grafana cli admin reset-admin-password "<new password>"`.
 
 > ⚠️ **Important** : "POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB" 
 are only read by Postgres during the very first initialization of the data volume.

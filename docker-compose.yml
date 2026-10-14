@@ -9,7 +9,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "${POSTGRES_PORT}:5432"
+      # Loopback only: reachable from this machine (local scripts, DBeaver), not
+      # from the network. Docker-published ports bypass host firewalls such as ufw.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./docker/initdb:/docker-entrypoint-initdb.d:ro 
@@ -169,7 +171,8 @@ services:
     restart: unless-stopped
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Required, no fallback: an unset variable used to mean admin/admin.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is not set in .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -181,7 +184,9 @@ services:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
     ports:
-      - "3000:3000"
+      # Loopback by default: anonymous viewers can read every dashboard.
+      # GRAFANA_BIND_ADDRESS=0.0.0.0 in .env opens it to the network on purpose.
+      - "${GRAFANA_BIND_ADDRESS:-127.0.0.1}:3000:3000"
     depends_on:
       - prometheus
       - db
