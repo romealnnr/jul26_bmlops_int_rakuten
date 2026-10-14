@@ -134,8 +134,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="MLOps Phase 1 — Inference API",
-    description="Entraînement et inférence du modèle baseline.",
+    title="Rakuten product classification API",
+    description=(
+        "Training, prediction, model metadata and drift endpoints of the Rakuten "
+        "product-type classifier (text + image). The served model is the MLflow "
+        "registry version in the Production stage."
+    ),
     version="0.1.0",
     lifespan=lifespan,
 )
