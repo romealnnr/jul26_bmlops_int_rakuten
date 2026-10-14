@@ -272,7 +272,7 @@ async def run_training(request: TrainingRequest) -> TrainingResponse:
     return TrainingResponse(status="trained", **summary)
 
 
-@app.post("/training/trigger", tags=["monitoring"])
+@app.post("/training/trigger", tags=["monitoring"], dependencies=[Depends(require_api_key)])
 async def training_trigger(background: BackgroundTasks) -> dict[str, Any]:
     """Entry point for Grafana's webhook contact point (Phase 3 of the brief).
 
@@ -293,7 +293,8 @@ async def training_trigger(background: BackgroundTasks) -> dict[str, Any]:
     background task and the call returns at once.
 
     The request body is ignored entirely - whatever Grafana sends, this does
-    one specific thing.
+    one specific thing. Like /training it needs the API key: the Grafana
+    contact point sends it as "Authorization: Bearer <API_KEY>".
     """
     if _training_in_progress():
         # The third brake, after `for: 10m` on the rule and `repeat_interval`

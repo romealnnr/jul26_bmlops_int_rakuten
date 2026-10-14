@@ -10,7 +10,7 @@ SPLITS = ("train", "test")
 
 API_INTERNAL_URL = os.getenv("API_INTERNAL_URL", "http://api:8000")
 PROMETHEUS_INTERNAL_URL = os.getenv("PROMETHEUS_INTERNAL_URL", "http://prometheus:9090")
-# Key for the admin endpoints (/training, /drift/compute), sent as X-API-Key.
+# Key for the admin endpoints (/training, /training/trigger and /drift/compute), sent as X-API-Key.
 API_KEY = os.getenv("API_KEY", "").strip()
 # Unlocks the admin forms. The app adds API_KEY on the server side, so without this
 # password anyone who can open the app could train. Empty: the forms are hidden.

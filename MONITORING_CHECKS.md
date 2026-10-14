@@ -226,8 +226,8 @@ This proves the brief's requirement: drift alert → Grafana → retraining.
 The lock first. Send two POSTs back to back, with no pause:
 
 ```
-curl -s -X POST http://127.0.0.1:8000/training/trigger
-curl -s -X POST http://127.0.0.1:8000/training/trigger
+curl -s -X POST http://127.0.0.1:8000/training/trigger -H "X-API-Key: $API_KEY"
+curl -s -X POST http://127.0.0.1:8000/training/trigger -H "X-API-Key: $API_KEY"
 ```
 
 Expected, in this exact order:

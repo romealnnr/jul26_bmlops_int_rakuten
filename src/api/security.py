@@ -1,4 +1,4 @@
-"""API key check for the admin endpoints (/training, /drift/compute).
+"""API key check for the admin endpoints (/training, /training/trigger and /drift/compute).
 
 Usage in a route:  dependencies=[Depends(require_api_key)]
 
@@ -18,7 +18,7 @@ replace the served model; a deployment that forgot to set the key would
 otherwise be silently open, which is exactly the defect being fixed.
 Failing closed makes the misconfiguration visible on the first call, and the
 fix is one line in .env. Read-only endpoints (/health, /model, /predict,
-/metrics) and the Grafana webhook /training/trigger are not affected.
+/metrics) are not affected.
 """
 
 from __future__ import annotations

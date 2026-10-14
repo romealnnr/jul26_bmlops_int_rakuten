@@ -39,13 +39,13 @@ def client(monkeypatch):
     return TestClient(main.app)
 
 
-@pytest.mark.parametrize("path", ["/training", "/drift/compute", "/drift/predictions"])
+@pytest.mark.parametrize("path", ["/training", "/training/trigger", "/drift/compute"])
 def test_admin_endpoints_refuse_missing_or_wrong_key(client, path):
     assert client.post(path, json={}).status_code == 401
     assert client.post(path, json={}, headers={"X-API-Key": "wrong"}).status_code == 401
 
 
-@pytest.mark.parametrize("path", ["/training", "/drift/compute", "/drift/predictions"])
+@pytest.mark.parametrize("path", ["/training", "/training/trigger", "/drift/compute"])
 def test_admin_endpoints_fail_closed_without_server_key(client, monkeypatch, path):
     monkeypatch.delenv("API_KEY")
     assert client.post(path, json={}, headers={"X-API-Key": KEY}).status_code == 503

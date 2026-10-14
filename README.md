@@ -84,6 +84,10 @@ RANDOM_STATE=42
 API_HOST=0.0.0.0
 API_PORT=8000
 LOG_LEVEL=INFO
+# Key for /training, /training/trigger and /drift/compute (X-API-Key header)
+API_KEY=<python -c "import secrets; print(secrets.token_urlsafe(32))">
+# Unlocks the Retrain / Compute drift forms in Streamlit
+STREAMLIT_ADMIN_PASSWORD=<choose a password>
 
 # --- MLflow ---
 MLFLOW_TRACKING_URI=postgresql+psycopg://"POSTGRES_USER":"POSTGRES_PASSWORD"@localhost:5432/mlops
@@ -202,6 +206,7 @@ Documentation interactive : http://localhost:8000/docs
 **Example — quick training:**
 ```bash
 curl -X POST http://localhost:8000/training \
+  -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"limit": 3000}'
 ```
@@ -209,6 +214,7 @@ curl -X POST http://localhost:8000/training \
 **Example — full training:**
 ```bash
 curl -X POST http://localhost:8000/training \
+  -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```

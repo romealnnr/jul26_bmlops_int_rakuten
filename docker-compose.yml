@@ -172,6 +172,8 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       # Required, no fallback: an unset variable used to mean admin/admin.
+      # Sent by the retrain webhook contact point to /training/trigger.
+      API_KEY: ${API_KEY:-}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is not set in .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
       POSTGRES_USER: ${POSTGRES_USER}
