@@ -2,7 +2,9 @@ import os
 from pathlib import Path
 
 RAW_DIR = Path(os.getenv("RAW_DIR", "/data/raw"))
-API_IMAGE_ROOT = os.getenv("API_IMAGE_ROOT", "/app/src/data/raw")
+# The raw data folder as seen from INSIDE the api container; image paths sent to
+# /predict are built from this root (trailing "/" stripped to avoid "//").
+API_IMAGE_ROOT = os.getenv("API_IMAGE_ROOT", "/app/src/data/raw").rstrip("/")
 Y_TRAIN_FILE = "Y_train_CVw08PX.csv"
 
 API_INTERNAL_URL = os.getenv("API_INTERNAL_URL", "http://api:8000")

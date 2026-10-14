@@ -1,5 +1,6 @@
 import json
 import random
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -104,6 +105,21 @@ def load_split(split: str) -> pd.DataFrame:
     return x
 
 
+def image_location(split: str, imageid: int, productid: int) -> tuple[Path | None, str]:
+    """Find the product photo and the matching path as seen by the API.
+
+    The Rakuten archive unpacks into a nested folder (image_train/image_train/<file>);
+    a flat layout (image_train/<file>) is also accepted. Returns (local_path or None, api_path).
+    """
+    fname = f"image_{imageid}_product_{productid}.jpg"
+    nested = Path(f"image_{split}") / f"image_{split}" / fname
+    flat = Path(f"image_{split}") / fname
+    for rel in (nested, flat):
+        if (RAW_DIR / rel).is_file():
+            return RAW_DIR / rel, f"{API_IMAGE_ROOT}/{rel.as_posix()}"
+    return None, f"{API_IMAGE_ROOT}/{nested.as_posix()}"
+
+
 def _random_row(n: int):
     stlt.session_state["row_pos"] = random.randrange(n)
 
@@ -125,16 +141,14 @@ def dataset_sample_mode():
     pos = c2.number_input("Row position", 0, len(df) - 1, key="row_pos")
 
     row = df.iloc[int(pos)]
-    fname = f"image_{int(row['imageid'])}_product_{int(row['productid'])}.jpg"
-    local_img = RAW_DIR / f"image_{split}" / fname
-    api_img = f"{API_IMAGE_ROOT}/image_{split}/{fname}"
+    local_img, api_img = image_location(split, int(row["imageid"]), int(row["productid"]))
 
     left, right = stlt.columns([1, 2])
     with left:
-        if local_img.exists():
+        if local_img is not None:
             stlt.image(str(local_img), use_container_width=True)
         else:
-            stlt.warning(f"Image not found: {fname}")
+            stlt.warning(f"Image not found under {RAW_DIR}/image_{split}/: {Path(api_img).name}")
     with right:
         stlt.markdown(f"**{row['designation']}**")
         stlt.caption(row["description"][:500] or "(no description)")
