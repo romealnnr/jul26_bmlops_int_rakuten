@@ -258,7 +258,7 @@ docker compose exec api python -m src.models.training [--test-size 0.2] [--rando
 docker compose exec api python -m src.models.predict --sample
 
 # Prediction on a JSON file (object or list of objects)
-docker compose exec api python -m src.models.predict --input payload.json [--no-log]
+docker compose exec api python -m src.models.predict --input payload.json [--no-log] [--mlflow]
 ```
 
 ## 8. Troubleshooting

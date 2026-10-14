@@ -39,7 +39,7 @@ def test_category_names_cover_the_27_codes():
 
 def test_predict_returns_name_flag_and_top3(fake_model):
     records = [{"designation": "Manette"}, {"designation": "Objet"}]
-    results = predict_module.predict(records, log_to_db=False, log_to_mlflow=False)
+    results = predict_module.predict(records, log_to_db=False)
 
     confident, unsure = results
     assert confident["prediction"] == 40
@@ -60,7 +60,7 @@ def test_api_response_keeps_name_flag_and_top3(fake_model, monkeypatch):
     monkeypatch.setattr(
         predict_module,
         "predict",
-        lambda records: real_predict(records, log_to_db=False, log_to_mlflow=False),
+        lambda records: real_predict(records, log_to_db=False),
     )
     client = TestClient(api_main.app)  # no context manager: startup (DB, MLflow) is skipped
     response = client.post("/predict", json={"records": [{"designation": "Manette"}]})

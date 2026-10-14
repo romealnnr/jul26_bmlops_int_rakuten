@@ -81,4 +81,4 @@ def test_invalid_records_get_422_and_never_reach_the_model(client, records):
 def test_predict_function_validates_cli_and_dag_callers_too():
     # Validation runs before the model is loaded, so no MLflow is needed here.
     with pytest.raises(pydantic.ValidationError):
-        predict_module.predict([{"description": "no title"}], log_to_db=False, log_to_mlflow=False)
+        predict_module.predict([{"description": "no title"}], log_to_db=False)

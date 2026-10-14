@@ -124,7 +124,6 @@ def test_predict_reports_whether_the_image_was_used(served, raw_dir):
             {"designation": "piscine gonflable"},
         ],
         log_to_db=False,
-        log_to_mlflow=False,
     )
     assert [r["image_used"] for r in results] == [True, False, False]
     assert results[0]["warnings"] == []

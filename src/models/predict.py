@@ -2,7 +2,12 @@
 
 Usage :
     python -m src.models.predict --sample
-    python -m src.models.predict --input payload.json
+    python -m src.models.predict --input payload.json [--mlflow]
+
+predict() never opens an MLflow run: the API calls it once per /predict request,
+and a run per request would flood the training experiment. A batch summary is
+logged only on demand from the CLI (--mlflow), in a separate experiment
+"<MLFLOW_EXPERIMENT_NAME>-predictions".
 """
 
 from __future__ import annotations
@@ -10,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import warnings as py_warnings
 from datetime import UTC
 from datetime import datetime as dt
 from pathlib import Path
@@ -117,15 +123,19 @@ def model_info() -> dict[str, Any]:
     }
 
 
-def _log_batch_to_mlflow(results: list[dict[str, Any]]) -> None:
-    """Journalise un résumé du batch de prédictions dans MLflow (monitoring)."""
+def log_batch_to_mlflow(results: list[dict[str, Any]]) -> None:
+    """CLI uniquement : journalise un résumé du batch dans MLflow.
+
+    Expérience séparée "<MLFLOW_EXPERIMENT_NAME>-predictions" pour que l'expérience
+    d'entraînement ne contienne que des runs d'entraînement.
+    """
     n_total = len(results)
     n_flagged = sum(1 for r in results if r["flagged"])
     flag_rate = (n_flagged / n_total) if n_total else 0.0
 
     try:
         mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
-        mlflow.set_experiment(settings.mlflow_experiment_name)
+        mlflow.set_experiment(f"{settings.mlflow_experiment_name}-predictions")
 
         with mlflow.start_run(run_name="prediction_batch"):
             mlflow.set_tags(
@@ -202,9 +212,21 @@ def _true_label(value: Any, known: set[int]) -> int | None:
 
 
 def predict(
-    records: list[dict], log_to_db: bool = True, log_to_mlflow: bool = True
+    records: list[dict], log_to_db: bool = True, log_to_mlflow: bool | None = None
 ) -> list[dict[str, Any]]:
-    """Prédit pour une liste d'observations et journalise le résultat."""
+    """Prédit pour une liste d'observations et journalise le résultat en base.
+
+    Aucun run MLflow n'est créé ici (voir log_batch_to_mlflow pour la CLI).
+    log_to_mlflow is deprecated and ignored; it is still accepted so existing
+    callers keep working.
+    """
+    if log_to_mlflow is not None:
+        py_warnings.warn(
+            "predict(log_to_mlflow=...) is ignored: predict() no longer opens MLflow runs. "
+            "Use log_batch_to_mlflow(results) for a batch summary.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     if not records:
         raise ValueError("Aucune observation fournie")
     records = _validate(records)
@@ -276,9 +298,6 @@ def predict(
     if log_to_db:
         _store(records, results, artifact["version"])
 
-    if log_to_mlflow:
-        _log_batch_to_mlflow(results)
-
     return results
 
 
@@ -347,10 +366,19 @@ def main() -> int:
     group.add_argument("--input", type=Path, help="Fichier JSON (objet ou liste d'objets)")
     group.add_argument("--sample", action="store_true", help="Utilise une ligne de la base")
     parser.add_argument("--no-log", action="store_true", help="Ne journalise pas en base")
-    parser.add_argument("--no-mlflow", action="store_true", help="Ne journalise pas dans MLflow")
+    # Deprecated: predictions are no longer logged to MLflow by default, so there is
+    # nothing to switch off. Still accepted so existing scripts keep working.
+    parser.add_argument("--no-mlflow", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--mlflow",
+        action="store_true",
+        help="Journalise un résumé du batch dans l'expérience <MLFLOW_EXPERIMENT_NAME>-predictions",
+    )
     args = parser.parse_args()
 
     setup_logging()
+    if args.no_mlflow:
+        logger.warning("--no-mlflow is deprecated and has no effect (use --mlflow to log).")
 
     if args.sample:
         records = [sample_record()]
@@ -358,7 +386,9 @@ def main() -> int:
         payload = json.loads(args.input.read_text(encoding="utf-8"))
         records = payload if isinstance(payload, list) else [payload]
 
-    results = predict(records, log_to_db=not args.no_log, log_to_mlflow=not args.no_mlflow)
+    results = predict(records, log_to_db=not args.no_log)
+    if args.mlflow:
+        log_batch_to_mlflow(results)
     print(json.dumps(results, indent=2))
     return 0
 
