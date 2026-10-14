@@ -20,13 +20,14 @@ datasources:
     # and only the SQL panels come back empty.
     #
     # Grafana expands $VAR from its own container's environment. The three
-    # variables are passed to the grafana service in
-    # docker-compose.monitoring.yml.
+    # variables are passed to the grafana service in docker-compose.yml.
     database: $POSTGRES_DB
     user: $POSTGRES_USER
     secureJsonData:
       password: $POSTGRES_PASSWORD
     jsonData:
+      # Grafana 11 reads the database name from jsonData; the top-level key is the older form.
+      database: $POSTGRES_DB
       sslmode: disable
       postgresVersion: 1600
       timescaledb: false

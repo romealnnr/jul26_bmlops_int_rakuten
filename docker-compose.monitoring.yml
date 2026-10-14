@@ -1,6 +1,4 @@
-# Monitoring overlay - a proposal, not a replacement.
-#
-# This file changes nothing in docker-compose.yml. It is applied on top of it:
+# Monitoring overlay - optional, applied on top of docker-compose.yml:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
 #
@@ -11,30 +9,14 @@
 # the image sets by default - omitting them would silently unconfigure
 # Prometheus.
 #
-# Written as an overlay on purpose. Everything here is a claim about how the
-# monitoring stack should behave, and a claim is worth more when the other
-# person can run it and then throw it away without a revert.
+# The Grafana part of the earlier proposal is now in the base files: the
+# PostgreSQL datasource reads $POSTGRES_USER and $POSTGRES_DB
+# (monitoring/grafana/provisioning/datasources/datasources.yml), and the grafana
+# service in docker-compose.yml passes both variables into the container.
+# What remains here is the Prometheus retention and reload change, kept as an
+# overlay so it can be tried and dropped without a revert.
 
 services:
-
-  # --------------------------------------------------------------------------
-  # Grafana: let the provisioned datasource resolve its own credentials.
-  # --------------------------------------------------------------------------
-  #
-  # datasources.yml reads `$POSTGRES_PASSWORD` and works. It would read
-  # `$POSTGRES_USER` and `$POSTGRES_DB` too - but Grafana expands those
-  # variables from THIS container's environment, not from .env and not from
-  # the db service, and only the password is passed in today.
-  #
-  # Both halves have to land together. The datasource change alone expands to
-  # an empty username, and the failure is silent in the worst way: Grafana
-  # starts, both datasources appear, and the SQL panels simply return nothing.
-  # An empty drift panel and a "no drift detected" drift panel are
-  # indistinguishable on screen.
-  grafana:
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_DB: ${POSTGRES_DB}
 
   # --------------------------------------------------------------------------
   # Prometheus: keep enough history to see a trend, and reload without a restart.
