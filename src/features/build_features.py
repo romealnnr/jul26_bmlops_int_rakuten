@@ -3,20 +3,19 @@
 from __future__ import annotations
 
 import logging
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import StandardScaler
-from sklearn.feature_extraction.text import TfidfVectorizer
+
 import pandas as pd
 from sklearn.compose import ColumnTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sqlalchemy import select
-from src.features.image_features import ImageEmbeddingTransformer
 
 from src.config import settings
 from src.data.db import RawSample, get_session
+from src.features.image_features import ImageEmbeddingTransformer
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,6 @@
 import os
 from pathlib import Path
 
-
 RAW_DIR = Path(os.getenv("RAW_DIR", "/data/raw"))
 API_IMAGE_ROOT = os.getenv("API_IMAGE_ROOT", "/app/src/data/raw")
 Y_TRAIN_FILE = "Y_train_CVw08PX.csv"

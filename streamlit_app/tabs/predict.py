@@ -1,13 +1,18 @@
 import json
+import random
 
 import pandas as pd
 import requests
 import streamlit as stlt
 
-from config import API_INTERNAL_URL, FLAG_THRESHOLD, RAW_DIR, API_IMAGE_ROOT, Y_TRAIN_FILE, PRDTYPECODE_LABELS
-
-import random
-
+from config import (
+    API_IMAGE_ROOT,
+    API_INTERNAL_URL,
+    FLAG_THRESHOLD,
+    PRDTYPECODE_LABELS,
+    RAW_DIR,
+    Y_TRAIN_FILE,
+)
 
 EXAMPLE_RECORD = {
     "designation": "Console de jeu portable retro",
@@ -197,7 +202,9 @@ def render():
             image_path = stlt.text_input(
                 "image_path (optional)",
                 "",
-                help="Path as seen INSIDE the api container. Empty or unreadable = no image information.",
+                help=("Path as seen INSIDE the api container. "
+                      "Empty or unreadable = no image information."
+                      ),
             )
             submitted = stlt.form_submit_button("Predict")
         if submitted:
@@ -262,7 +269,10 @@ def render():
 
     # admin
     stlt.subheader("Admin actions")
-    stlt.caption("These change state (model files, MLflow runs, DB). Use carefully during demonstration.")
+    stlt.caption(
+        "These change state (model files, MLflow runs, DB). "
+                 "Use carefully during demonstration."
+                 )
 
     with stlt.expander("Retrain model (/training)"):
         with stlt.form("train"):

@@ -94,7 +94,9 @@ class DriftMetric(Base):
     __tablename__ = "drift_metrics"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                             server_default=func.now(),
+                                             nullable=False)
     reference_desc: Mapped[str] = mapped_column(String(200), nullable=False)
     current_desc: Mapped[str] = mapped_column(String(200), nullable=False)
     column_name: Mapped[str] = mapped_column(String(100), nullable=False)

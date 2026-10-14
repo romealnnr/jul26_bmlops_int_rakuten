@@ -13,7 +13,7 @@ import logging
 import pandas as pd
 from sqlalchemy import insert
 
-from src.config import RAW_DATA_DIR, IMAGE_TRAIN_DIR, ensure_dirs, settings, setup_logging
+from src.config import IMAGE_TRAIN_DIR, RAW_DATA_DIR, ensure_dirs, setup_logging
 from src.data.db import RawSample, count_raw_samples, drop_db, get_session, init_db, ping
 
 logger = logging.getLogger(__name__)
@@ -97,7 +97,8 @@ def ingest(rows: list[dict], chunk_size: int = 500) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Ingestion one-shot vers PostgreSQL")
-    parser.add_argument("--force", action="store_true", help="Vide les tables et réinsère les données")
+    parser.add_argument("--force", action="store_true",
+                        help="Vide les tables et réinsère les données")
     parser.add_argument("--chunk-size", type=int, default=500)
     args = parser.parse_args()
 

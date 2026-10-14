@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import numpy as np
 import torch
-from torch import nn
-from torchvision import models, transforms
 from PIL import Image
 from sklearn.base import BaseEstimator, TransformerMixin
+from torch import nn
+from torchvision import models, transforms
 
 IMAGE_SIZE = 224
 IMAGE_EMBEDDING_DIM = 512

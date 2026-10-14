@@ -60,9 +60,18 @@ def evaluate(pipeline: Pipeline, X_test, y_test) -> dict[str, Any]:
 
     return {
         "accuracy": round(float(accuracy_score(y_test, y_pred)), 4),
-        "weighted_f1": round(float(f1_score(y_test, y_pred, average="weighted", zero_division=0)), 4),
-        "weighted_precision": round(float(precision_score(y_test, y_pred, average="weighted", zero_division=0)), 4),
-        "weighted_recall": round(float(recall_score(y_test, y_pred, average="weighted", zero_division=0)), 4),
+        "weighted_f1": round(float(f1_score(y_test, 
+                                            y_pred, 
+                                            average="weighted", 
+                                            zero_division=0)), 4),
+        "weighted_precision": round(float(precision_score(y_test, 
+                                                          y_pred, 
+                                                          average="weighted", 
+                                                          zero_division=0)), 4),
+        "weighted_recall": round(float(recall_score(y_test, 
+                                                    y_pred, 
+                                                    average="weighted", 
+                                                    zero_division=0)), 4),
         "confusion_matrix": confusion_matrix(y_test, y_pred).tolist(),
         "report": classification_report(y_test, y_pred, output_dict=True, zero_division=0),
     }
@@ -204,7 +213,10 @@ def _compare_and_promote(
         )
         is_best = False
 
-    client.set_model_version_tag(model_name, new_version, "best_model", "true" if is_best else "false")
+    client.set_model_version_tag(model_name, 
+                                 new_version, 
+                                 "best_model", 
+                                 "true" if is_best else "false")
     client.set_model_version_tag(model_name, new_version, PRIMARY_METRIC, str(new_score))
     client.set_model_version_tag(model_name, new_version, "comparison_basis", basis)
 
@@ -212,7 +224,10 @@ def _compare_and_promote(
     # (replaced by aliases) but remains functional and widely used.
     if is_best:
         client.transition_model_version_stage(
-            name=model_name, version=new_version, stage="Production", archive_existing_versions=True,
+            name=model_name, 
+            version=new_version, 
+            stage="Production", 
+            archive_existing_versions=True,
         )
     else:
         client.transition_model_version_stage(
@@ -257,7 +272,7 @@ def _get_cursor(session, pipeline_name: str = CONTINUOUS_PIPELINE_NAME) -> int:
 
 def _update_cursor(session, new_id: int, pipeline_name: str = CONTINUOUS_PIPELINE_NAME) -> None:
     """Updates last_processed_id after a successful training."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from src.data.db import PipelineCursor
 
@@ -266,7 +281,7 @@ def _update_cursor(session, new_id: int, pipeline_name: str = CONTINUOUS_PIPELIN
         cursor = PipelineCursor(pipeline_name=pipeline_name)
         session.add(cursor)
     cursor.last_processed_id = new_id
-    cursor.last_run_at = datetime.now(timezone.utc)
+    cursor.last_run_at = datetime.now(UTC)
     session.commit()
 
 
@@ -340,7 +355,8 @@ def train(
         
         if os.getenv("MLFLOW_LOG_ARTIFACTS", "true").lower() != "false":
              mlflow.log_dict(metrics["report"], "classification_report.json")
-             mlflow.log_dict({"confusion_matrix": metrics["confusion_matrix"]}, "confusion_matrix.json")
+             mlflow.log_dict({"confusion_matrix": metrics["confusion_matrix"]}, 
+                             "confusion_matrix.json")
         
         mlflow.sklearn.log_model(
             sk_model=pipeline,
@@ -350,7 +366,8 @@ def train(
         run_id = run.info.run_id
 
     # Registration in the Model Registry (outside the with block, run already closed)
-    registered = mlflow.register_model(model_uri=f"runs:/{run_id}/model", name=settings.mlflow_registered_model_name)
+    registered = mlflow.register_model(model_uri=f"runs:/{run_id}/model", 
+                                       name=settings.mlflow_registered_model_name)
     new_model_version = registered.version
 
     client = MlflowClient()
@@ -411,7 +428,10 @@ def main() -> int:
     limit = args.limit if args.limit else None  # 0 ou None → no limit
 
     setup_logging()
-    train(test_size=args.test_size, random_state=args.random_state, limit=limit, continuous=args.continuous)
+    train(test_size=args.test_size, 
+          random_state=args.random_state, 
+          limit=limit, 
+          continuous=args.continuous)
     return 0
 
 
