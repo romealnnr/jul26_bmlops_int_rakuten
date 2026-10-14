@@ -112,10 +112,10 @@ services:
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     user: "${AIRFLOW_UID}:0"
-    command:
-      - db
-      - migrate
+    # Creates the airflow database if it is missing, then runs `airflow db migrate`.
+    command: ["bash", "/opt/airflow/scripts/airflow_init.sh"]
     volumes:
+      - ./scripts/airflow_init.sh:/opt/airflow/scripts/airflow_init.sh:ro
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
