@@ -14,7 +14,7 @@ datasources:
     access: proxy
     url: db:5432
     database: mlops
-    user: romealnnr
+    user: ${POSTGRES_USER}
     secureJsonData:
       password: $POSTGRES_PASSWORD
     jsonData:
