@@ -9,7 +9,13 @@ def render():
     cfg = DASHBOARDS[name]
 
     if not cfg["url"]:
-        stlt.warning(f"No URL configured for {name}.")
+        if name == "DagsHub":
+            stlt.info(
+                "No DagsHub repository configured: set DAGSHUB_URL in the environment of the "
+                "streamlit service (for example `https://dagshub.com/OWNER/REPO`)."
+            )
+        else:
+            stlt.warning(f"No URL configured for {name}.")
         return
 
     stlt.link_button(f"Open {name} in a new tab", cfg["url"])

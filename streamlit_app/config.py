@@ -11,6 +11,16 @@ SPLITS = ("train", "test")
 API_INTERNAL_URL = os.getenv("API_INTERNAL_URL", "http://api:8000")
 PROMETHEUS_INTERNAL_URL = os.getenv("PROMETHEUS_INTERNAL_URL", "http://prometheus:9090")
 
+
+def _configured_url(name: str, default: str = "") -> str:
+    """Return a usable URL from the environment, or "" when unset or still a placeholder."""
+    url = os.getenv(name, default).strip()
+    # Template values such as http://dagshub.com/<user>/<repo> are not real links.
+    if "<" in url or ">" in url:
+        return ""
+    return url
+
+
 DASHBOARDS = {
     "Grafana": {
         "url": os.getenv("GRAFANA_URL", "http://localhost:3000"),
@@ -24,7 +34,7 @@ DASHBOARDS = {
     "Prometheus": {"url": os.getenv("PROMETHEUS_URL", "http://localhost:9090"), "embed": True},
     "Airflow": {"url": os.getenv("AIRFLOW_URL", "http://localhost:8081"),  "embed": True},
     "FastAPI Docs": {"url": os.getenv("API_DOCS_URL", "http://localhost:8000/docs"), "embed": True},
-    "DagsHub": {"url": os.getenv("DAGSHUB_URL", ""), "embed": False},
+    "DagsHub": {"url": _configured_url("DAGSHUB_URL"), "embed": False},
     "MLflow": {
         "url": os.getenv("MLFLOW_URL", "http://localhost:5000"),
         "embed": True,
