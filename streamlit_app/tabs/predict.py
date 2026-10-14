@@ -1,3 +1,4 @@
+import hmac
 import json
 import random
 from pathlib import Path
@@ -10,9 +11,11 @@ from records import records_for_api
 from config import (
     API_IMAGE_ROOT,
     API_INTERNAL_URL,
+    API_KEY,
     PRDTYPECODE_LABELS,
     RAW_DIR,
     SPLITS,
+    STREAMLIT_ADMIN_PASSWORD,
     Y_TRAIN_FILE,
 )
 
@@ -42,9 +45,13 @@ def to_df(payload: dict) -> pd.DataFrame:
     return pd.DataFrame(payload["results"])
 
 
-def call_api(method: str, path: str, timeout: int = 30, **kwargs):
-    """Call the API and return (ok, payload). Never raises."""
-    
+def call_api(method: str, path: str, timeout: int = 30, admin: bool = False, **kwargs):
+    """Call the API and return (ok, payload). Never raises.
+
+    admin=True sends API_KEY as X-API-Key (needed by /training and /drift/compute).
+    """
+    if admin:
+        kwargs["headers"] = {**kwargs.get("headers", {}), "X-API-Key": API_KEY}
     try:
         r = requests.request(method, f"{API_INTERNAL_URL}{path}", timeout=timeout, **kwargs)
     except requests.RequestException as exc:
@@ -61,6 +68,20 @@ def call_api(method: str, path: str, timeout: int = 30, **kwargs):
     detail = data.get("detail", data) if isinstance(data, dict) else data
     
     return False, f"HTTP {r.status_code}: {detail}"
+
+
+def admin_unlocked() -> bool:
+    """True when STREAMLIT_ADMIN_PASSWORD is set and the visitor typed it (constant-time)."""
+    if not STREAMLIT_ADMIN_PASSWORD:
+        stlt.info("Admin actions are disabled: set STREAMLIT_ADMIN_PASSWORD in .env to enable.")
+        return False
+    entered = stlt.text_input("Admin password", type="password", key="admin_password")
+    if not entered:
+        return False
+    if not hmac.compare_digest(entered.encode(), STREAMLIT_ADMIN_PASSWORD.encode()):
+        stlt.error("Wrong admin password.")
+        return False
+    return True
 
 
 def show_predictions(payload: dict):
@@ -329,8 +350,10 @@ def render():
     stlt.subheader("Admin actions")
     stlt.caption(
         "These change state (model files, MLflow runs, DB). "
-                 "Use carefully during demonstration."
-                 )
+        "Use carefully during demonstration."
+    )
+    if not admin_unlocked():
+        return
 
     with stlt.expander("Retrain model (/training)"):
         with stlt.form("train"):
@@ -348,7 +371,7 @@ def render():
                 "continuous": continuous,
             }
             with stlt.spinner("Training... this can take a while"):
-                ok, data = call_api("POST", "/training", json=body, timeout=1800)
+                ok, data = call_api("POST", "/training", json=body, timeout=1800, admin=True)
             if ok:
                 stlt.success(f"Trained version {data['version']}")
                 stlt.json(data)
@@ -358,7 +381,7 @@ def render():
     with stlt.expander("Compute data drift (/drift/compute)"):
         if stlt.button("Compute drift"):
             with stlt.spinner("Computing drift..."):
-                ok, data = call_api("POST", "/drift/compute", timeout=300)
+                ok, data = call_api("POST", "/drift/compute", timeout=300, admin=True)
             if ok:
                 stlt.json(data)
                 stlt.info("Metrics are stored in the DB, check the Grafana tab.")

@@ -84,6 +84,10 @@ RANDOM_STATE=42
 API_HOST=0.0.0.0
 API_PORT=8000
 LOG_LEVEL=INFO
+# Key for /training, /training/trigger and /drift/compute (X-API-Key header)
+API_KEY=<python -c "import secrets; print(secrets.token_urlsafe(32))">
+# Unlocks the Retrain / Compute drift forms in Streamlit
+STREAMLIT_ADMIN_PASSWORD=<choose a password>
 
 # --- MLflow ---
 MLFLOW_TRACKING_URI=postgresql+psycopg://"POSTGRES_USER":"POSTGRES_PASSWORD"@localhost:5432/mlops
@@ -95,7 +99,21 @@ MLFLOW_REGISTERED_MODEL_NAME=rakuten_baseline
 AIRFLOW_UID=1000
 AIRFLOW_FERNET_KEY=<create a key>
 AIRFLOW_JWT_SECRET=<create a key>
+# Airflow web login (http://localhost:8081)
+AIRFLOW_ADMIN_USER=admin
+AIRFLOW_ADMIN_PASSWORD=<choose a password>
+
+# --- Grafana ---
+# Required: docker compose refuses to start without it (no admin/admin fallback).
+GRAFANA_ADMIN_PASSWORD=<choose a password>
 ```
+
+> Postgres (`POSTGRES_PORT`) and Grafana (port 3000) are published on 127.0.0.1
+only, so they are reachable from this machine but not from the network. To open
+Grafana to the network on purpose, set `GRAFANA_BIND_ADDRESS=0.0.0.0` in `.env`.
+Grafana reads `GRAFANA_ADMIN_PASSWORD` only when its data volume is first created;
+on an existing volume set it with
+`docker compose exec grafana grafana cli admin reset-admin-password "<new password>"`.
 
 > ⚠️ **Important** : "POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB" 
 are only read by Postgres during the very first initialization of the data volume.
@@ -188,6 +206,7 @@ Documentation interactive : http://localhost:8000/docs
 **Example — quick training:**
 ```bash
 curl -X POST http://localhost:8000/training \
+  -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"limit": 3000}'
 ```
@@ -195,6 +214,7 @@ curl -X POST http://localhost:8000/training \
 **Example — full training:**
 ```bash
 curl -X POST http://localhost:8000/training \
+  -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```

@@ -27,3 +27,8 @@ contactPoints:
         settings:
           url: http://api:8000/training/trigger
           httpMethod: POST
+          # /training/trigger needs the API key (src/api/security.py); webhook
+          # contact points cannot add custom headers, but they can send
+          # Authorization: Bearer <key>. $API_KEY comes from the grafana container.
+          authorization_scheme: Bearer
+          authorization_credentials: $API_KEY

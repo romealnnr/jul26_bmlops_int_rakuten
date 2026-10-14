@@ -9,7 +9,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "${POSTGRES_PORT}:5432"
+      # Loopback only: reachable from this machine (local scripts, DBeaver), not
+      # from the network. Docker-published ports bypass host firewalls such as ufw.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./docker/initdb:/docker-entrypoint-initdb.d:ro 
@@ -75,6 +77,7 @@ services:
       AIRFLOW__API_AUTH__JWT_ISSUER: airflow
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      API_KEY: ${API_KEY:-}
     user: "${AIRFLOW_UID}:0"
     command:
       - db
@@ -94,12 +97,20 @@ services:
         condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
-    environment: *airflow-env
+    environment:
+      <<: *airflow-env
+      # Fixed web login from .env (AIRFLOW_ADMIN_USER / AIRFLOW_ADMIN_PASSWORD).
+      # scripts/airflow_apiserver.sh writes the passwords file, then starts the server.
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "${AIRFLOW_ADMIN_USER:-admin}:admin"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/simple_auth_manager_passwords.json
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-admin}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-}
     user: "${AIRFLOW_UID}:0"
-    command: api-server
+    command: ["bash", "/opt/airflow/scripts/airflow_apiserver.sh"]
     ports:
       - "8081:8080"
     volumes:
+      - ./scripts/airflow_apiserver.sh:/opt/airflow/scripts/airflow_apiserver.sh:ro
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
@@ -160,7 +171,10 @@ services:
     restart: unless-stopped
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Required, no fallback: an unset variable used to mean admin/admin.
+      # Sent by the retrain webhook contact point to /training/trigger.
+      API_KEY: ${API_KEY:-}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is not set in .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -172,7 +186,9 @@ services:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
     ports:
-      - "3000:3000"
+      # Loopback by default: anonymous viewers can read every dashboard.
+      # GRAFANA_BIND_ADDRESS=0.0.0.0 in .env opens it to the network on purpose.
+      - "${GRAFANA_BIND_ADDRESS:-127.0.0.1}:3000:3000"
     depends_on:
       - prometheus
       - db
@@ -191,6 +207,10 @@ services:
       DAGSHUB_URL: ${DAGSHUB_URL:-https://dagshub.com/grover.sandeep/jul26_bmlops_int_rakuten}
       RAW_DIR: /data/raw
       API_IMAGE_ROOT: /app/src/data/raw
+      # Sent as X-API-Key on /training and /drift/compute; the admin forms are
+      # hidden unless STREAMLIT_ADMIN_PASSWORD is set and typed.
+      API_KEY: ${API_KEY:-}
+      STREAMLIT_ADMIN_PASSWORD: ${STREAMLIT_ADMIN_PASSWORD:-}
     volumes:
       - ./src/data/raw:/data/raw:ro
     ports:
