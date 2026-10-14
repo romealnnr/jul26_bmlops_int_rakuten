@@ -16,6 +16,7 @@ from typing import Any
 
 import mlflow
 import mlflow.sklearn
+import numpy as np
 from mlflow.tracking import MlflowClient
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -62,9 +63,11 @@ def build_pipeline(feature_names: list[str], random_state: int) -> Pipeline:
     )
 
 
-def evaluate(pipeline: Pipeline, X_test, y_test) -> dict[str, Any]:
-    """Métriques d'évaluation multiclasse (Rakuten a ~27 classes, pas 2)."""
-    y_pred = pipeline.predict(X_test)
+def evaluate(pipeline: Pipeline, X_test, y_test, y_pred=None) -> dict[str, Any]:
+    """Métriques d'évaluation multiclasse (Rakuten a ~27 classes, pas 2).
+    y_pred: predictions already computed on X_test (reused by the promotion gate)."""
+    if y_pred is None:
+        y_pred = pipeline.predict(X_test)
 
     return {
         "accuracy": round(float(accuracy_score(y_test, y_pred)), 4),
@@ -102,7 +105,7 @@ def _setup_mlflow() -> None:
 
 
 def _get_champion_version(client: MlflowClient, model_name: str):
-    """Return (version, metrics) of the model with the @champion alias, or (None, None).
+    """Return (version, metrics, params) of the @champion model, or (None, None, None).
 
     One-time migration: if no alias exists yet but a version is still in the old
     "Production" stage, the alias is set on that version. Stages are only read
@@ -125,17 +128,178 @@ def _get_champion_version(client: MlflowClient, model_name: str):
             if v.current_stage == "Production"
         ]
         if not legacy:
-            return None, None
+            return None, None, None
         version = max(legacy, key=lambda v: int(v.version))
         client.set_registered_model_alias(model_name, CHAMPION_ALIAS, version.version)
         logger.info("Migration: @%s set on Production version %s", CHAMPION_ALIAS, version.version)
 
     run = client.get_run(version.run_id)
-    return str(version.version), run.data.metrics
+    return str(version.version), run.data.metrics, run.data.params
 
 
-def _score_champion_on(model_name: str, X_test, y_test) -> float | None:
-    """Score the @champion model on the test set the challenger was just judged on.
+# Promotion gate (point 21) -------------------------------------------------------
+# One paired comparison: the @champion model and the new model
+# (challenger) predict the SAME test rows, restricted to rows the champion never
+# trained on (id above the champion's run param window_max_id). A paired bootstrap
+# over those rows gives the weighted-F1 gain with a 95% interval. The challenger is
+# promoted only if the lower bound is above 0 AND the gain is at least
+# PROMOTION_MIN_GAIN, so a +0.0001 difference is no longer enough.
+# Settings (environment, read at each training):
+#   PROMOTION_MIN_GAIN        minimum point gain in weighted F1 (default 0.005)
+#   PROMOTION_BOOTSTRAP       number of bootstrap resamples (default 1000)
+#   PROMOTION_BOOTSTRAP_SEED  seed of the resampling (default 42)
+#   PROMOTION_FIRST_MIN_F1    floor for the very first promotion (default 0.2)
+#   PROMOTION_MIN_ROWS        fewest paired rows the decision may rest on (default 100)
+DEFAULT_PROMOTION_MIN_GAIN = 0.005
+DEFAULT_PROMOTION_BOOTSTRAP = 1000
+DEFAULT_PROMOTION_BOOTSTRAP_SEED = 42
+DEFAULT_PROMOTION_FIRST_MIN_F1 = 0.2
+DEFAULT_PROMOTION_MIN_ROWS = 100
+# A gain exactly equal to a threshold must not be lost to float rounding.
+FLOAT_TOLERANCE = 1e-9
+
+
+def _promotion_settings() -> dict[str, Any]:
+    """Promotion gate settings from the environment (see the block comment above)."""
+    config = {
+        "min_gain": float(os.getenv("PROMOTION_MIN_GAIN", DEFAULT_PROMOTION_MIN_GAIN)),
+        "n_bootstrap": int(os.getenv("PROMOTION_BOOTSTRAP", DEFAULT_PROMOTION_BOOTSTRAP)),
+        "bootstrap_seed": int(
+            os.getenv("PROMOTION_BOOTSTRAP_SEED", DEFAULT_PROMOTION_BOOTSTRAP_SEED)
+        ),
+        "first_min_f1": float(
+            os.getenv("PROMOTION_FIRST_MIN_F1", DEFAULT_PROMOTION_FIRST_MIN_F1)
+        ),
+        "min_rows": int(os.getenv("PROMOTION_MIN_ROWS", DEFAULT_PROMOTION_MIN_ROWS)),
+    }
+    if min(config["min_gain"], config["first_min_f1"]) < 0:
+        raise ValueError("PROMOTION_MIN_GAIN and PROMOTION_FIRST_MIN_F1 must be >= 0")
+    if config["n_bootstrap"] < 100:
+        raise ValueError("PROMOTION_BOOTSTRAP must be >= 100")
+    if config["min_rows"] < 1:
+        raise ValueError("PROMOTION_MIN_ROWS must be >= 1")
+    return config
+
+
+def _weighted_f1_rows(weights: np.ndarray, truth: np.ndarray, pred: np.ndarray) -> np.ndarray:
+    """Weighted F1 (sklearn average="weighted", zero_division=0) for each row of weights.
+
+    weights is (m, n): how many times each of the n test rows is drawn in each of m
+    resamples; truth and pred are (n, k) one-hot matrices over the k labels."""
+    support = weights @ truth
+    predicted = weights @ pred
+    true_pos = weights @ (truth * pred)
+    denominator = support + predicted
+    f1 = np.divide(
+        2 * true_pos, denominator, out=np.zeros_like(true_pos), where=denominator > 0
+    )
+    return (f1 * support).sum(axis=1) / support.sum(axis=1)
+
+
+def paired_bootstrap_gain(
+    y_true, pred_challenger, pred_champion, n_resamples: int = DEFAULT_PROMOTION_BOOTSTRAP,
+    seed: int = DEFAULT_PROMOTION_BOOTSTRAP_SEED, chunk: int = 100,
+) -> dict[str, float]:
+    """Weighted-F1 gain (challenger minus champion) on the same rows, with a paired
+    bootstrap 95% percentile interval.
+
+    Each resample draws n row indices with replacement and scores BOTH models on those
+    same rows, so the interval reflects the paired difference. Vectorised: one matrix
+    product per chunk of resamples."""
+    y_true = np.asarray(y_true)
+    pred_challenger = np.asarray(pred_challenger)
+    pred_champion = np.asarray(pred_champion)
+    n = len(y_true)
+    if n == 0 or len(pred_challenger) != n or len(pred_champion) != n:
+        raise ValueError("paired bootstrap needs non-empty, equal-length predictions")
+    _, codes = np.unique(
+        np.concatenate([y_true, pred_challenger, pred_champion]).astype(str),
+        return_inverse=True,
+    )
+    eye = np.eye(int(codes.max()) + 1)
+    truth, new, old = eye[codes[:n]], eye[codes[n:2 * n]], eye[codes[2 * n:]]
+
+    ones = np.ones((1, n))
+    challenger_f1 = float(_weighted_f1_rows(ones, truth, new)[0])
+    champion_f1 = float(_weighted_f1_rows(ones, truth, old)[0])
+
+    rng = np.random.default_rng(seed)
+    gains = []
+    for start in range(0, n_resamples, chunk):
+        m = min(chunk, n_resamples - start)
+        draws = rng.integers(0, n, size=(m, n))
+        flat = (draws + (np.arange(m) * n)[:, None]).ravel()
+        weights = np.bincount(flat, minlength=m * n).reshape(m, n).astype(float)
+        gains.append(
+            _weighted_f1_rows(weights, truth, new) - _weighted_f1_rows(weights, truth, old)
+        )
+    ci_low, ci_high = np.percentile(np.concatenate(gains), [2.5, 97.5])
+    return {
+        "challenger_f1": challenger_f1,
+        "champion_f1": champion_f1,
+        "gain": challenger_f1 - champion_f1,
+        "ci_low": float(ci_low),
+        "ci_high": float(ci_high),
+        "n_bootstrap": int(n_resamples),
+        "n_rows": int(n),
+    }
+
+
+def decide_promotion(
+    prev_version: str | None,
+    new_score: float,
+    paired: dict[str, float] | None,
+    gate: dict[str, Any],
+    no_pair_reason: str | None = None,
+) -> tuple[str, str, bool]:
+    """The promotion rule: (decision, reason, is_best).
+
+    - No @champion model yet: promoted if the challenger's weighted F1 reaches
+      PROMOTION_FIRST_MIN_F1, otherwise rejected.
+    - No paired comparison possible (champion not scorable, its training window
+      unknown, or too few rows it never trained on): rejected. Its logged metric comes
+      from other rows and is not comparable, so it never decides.
+    - Otherwise promoted iff the bootstrap lower bound of the gain is > 0 AND the point
+      gain is >= PROMOTION_MIN_GAIN."""
+    if prev_version is None:
+        floor = gate["first_min_f1"]
+        if new_score >= floor - FLOAT_TOLERANCE:
+            return (
+                "promoted",
+                f"No @champion yet: first promotion ({PRIMARY_METRIC} "
+                f"{new_score:.4f} >= floor {floor:.4f}).",
+                True,
+            )
+        return (
+            "rejected",
+            f"No @champion yet, but {PRIMARY_METRIC} {new_score:.4f} is below the "
+            f"first-promotion floor PROMOTION_FIRST_MIN_F1={floor:.4f}: not served.",
+            False,
+        )
+    if paired is None:
+        return (
+            "rejected",
+            f"No paired comparison with @champion version {prev_version}: "
+            f"{no_pair_reason or 'champion not scorable'}. Its logged metric comes from "
+            "other rows and is not comparable, so the challenger is not auto-promoted. "
+            "Inspect, then promote by hand if wanted.",
+            False,
+        )
+    gain, low, high = paired["gain"], paired["ci_low"], paired["ci_high"]
+    detail = (
+        f"{PRIMARY_METRIC} new {paired['challenger_f1']:.4f} vs champion "
+        f"{paired['champion_f1']:.4f} on the same {paired['n_rows']} unseen test rows, "
+        f"gain {gain:+.4f} (95% bootstrap interval {low:+.4f} to {high:+.4f}, "
+        f"{paired['n_bootstrap']} resamples), minimum gain {gate['min_gain']:.4f}"
+    )
+    if low > 0 and gain >= gate["min_gain"] - FLOAT_TOLERANCE:
+        return "promoted", f"Promoted: {detail}.", True
+    why = "interval includes 0" if low <= 0 else "gain below the minimum"
+    return "rejected", f"Rejected ({why}): {detail}.", False
+
+
+def _score_champion_on(model_name: str, X_test) -> np.ndarray | None:
+    """Per-row predictions of the @champion model on the rows the challenger is judged on.
 
     This is the whole point of the change. Every training run splits its own
     batch and reports a metric measured on its own test rows, so comparing a
@@ -148,8 +312,8 @@ def _score_champion_on(model_name: str, X_test, y_test) -> float | None:
     that was graded on older, easier ones, and be rejected for having adapted.
     The retraining loop would then spin without ever changing the served model.
 
-    Returns None when the champion cannot be loaded or scored; the caller then
-    falls back to the stored metric and says so, rather than silently promoting.
+    Returns None when the champion cannot be loaded or cannot predict; the caller
+    then rejects the challenger and says so (never promote blindly).
     """
     try:
         champion = mlflow.sklearn.load_model(f"models:/{model_name}@{CHAMPION_ALIAS}")
@@ -158,14 +322,22 @@ def _score_champion_on(model_name: str, X_test, y_test) -> float | None:
         return None
 
     try:
-        y_pred = champion.predict(X_test)
+        return np.asarray(champion.predict(X_test))
     except Exception as exc:  # noqa: BLE001
         # A champion that cannot predict on current data is not a valid
         # comparison - but it is also a finding worth seeing in the logs.
         logger.warning("Champion model could not predict on the current test set: %s", exc)
         return None
 
-    return round(float(f1_score(y_test, y_pred, average="weighted", zero_division=0)), 4)
+
+def _window_max_id(params: dict[str, str] | None) -> int | None:
+    """Highest raw_samples id the champion trained on (run param window_max_id), or
+    None when unknown (runs logged before this change)."""
+    value = (params or {}).get("window_max_id")
+    try:
+        return int(value) if value not in (None, "", "None") else None
+    except ValueError:
+        return None
 
 
 def _compare_and_promote(
@@ -175,13 +347,17 @@ def _compare_and_promote(
     new_metrics: dict[str, Any],
     X_test,
     y_test,
+    y_pred,
+    test_ids,
 ) -> dict[str, Any]:
-    """Compare challenger and champion on the SAME test set, then promote or reject.
+    """Compare challenger and champion on the SAME unseen test rows, then promote or reject.
 
-    Both models are scored on the test rows of the batch that was just
-    processed - that is, on current data. The question the registry answers
-    becomes "which model handles today's data better?" instead of "who got a
-    higher mark on their own paper?".
+    Both models predict the test rows of the batch that was just processed - that
+    is, current data - restricted to the rows whose id is above the champion's
+    training window (run param window_max_id), so the champion is never graded on
+    rows it trained on. The decision is the paired bootstrap rule of
+    decide_promotion: a gain must be real (interval above 0) and large enough
+    (PROMOTION_MIN_GAIN), not a lucky +0.0001.
 
     The challenger was trained on rows from this same batch, so it does have
     an advantage here. That is intended: when the data has moved, the model
@@ -201,44 +377,52 @@ def _compare_and_promote(
     Promotion moves the registry aliases: @champion if promoted, @challenger if
     rejected (legacy stages are no longer written). A 'best_model' tag is also
     set on each version so the decision is visible in the MLflow UI."""
-    prev_version, prev_metrics = _get_champion_version(client, model_name)
+    gate = _promotion_settings()
+    prev_version, prev_metrics, prev_params = _get_champion_version(client, model_name)
     new_score = new_metrics[PRIMARY_METRIC]
 
     # What the champion reported when it was trained, kept only so the two
     # numbers can be read side by side. It is NOT what the decision uses.
     prev_logged_score = prev_metrics.get(PRIMARY_METRIC) if prev_metrics else None
-    prev_score = None
+    paired = None
+    no_pair_reason = None
+    n_unseen = None
     basis = "no_previous_model"
 
     if prev_version is not None:
-        prev_score = _score_champion_on(model_name, X_test, y_test)
-        if prev_score is not None:
-            basis = "same_test_set"
+        window = _window_max_id(prev_params)
+        if window is None:
+            basis = "champion_window_unknown"
+            no_pair_reason = (
+                "its training window (run param window_max_id) is unknown, so the rows "
+                "it trained on cannot be excluded"
+            )
         else:
-            # Fall back rather than promote blindly, and record that we did.
-            prev_score = prev_logged_score
-            basis = "champion_logged_metric_fallback"
+            unseen = np.asarray(test_ids) > window
+            n_unseen = int(unseen.sum())
+            if n_unseen < gate["min_rows"]:
+                basis = "too_few_unseen_rows"
+                no_pair_reason = (
+                    f"only {n_unseen} test rows have an id above its training window "
+                    f"(window_max_id={window}), PROMOTION_MIN_ROWS={gate['min_rows']} "
+                    "needed. A champion trained on the full dataset has seen almost every "
+                    "row: compare on new data (--continuous after new rows) or promote by hand"
+                )
+            else:
+                champion_pred = _score_champion_on(model_name, X_test.loc[unseen])
+                if champion_pred is None:
+                    basis = "champion_not_scorable"
+                    no_pair_reason = "it could not be loaded or could not predict"
+                else:
+                    basis = "paired_bootstrap_unseen_rows"
+                    paired = paired_bootstrap_gain(
+                        np.asarray(y_test)[unseen], np.asarray(y_pred)[unseen],
+                        champion_pred, gate["n_bootstrap"], gate["bootstrap_seed"],
+                    )
 
-    if prev_version is None:
-        decision, reason, is_best = "promoted", "No @champion yet: first promotion.", True
-    elif prev_score is None:
-        decision = "promoted"
-        reason = "Champion could not be evaluated and reported no stored metric."
-        is_best = True
-    elif new_score > prev_score:
-        decision = "promoted"
-        reason = (
-            f"New {PRIMARY_METRIC}={new_score:.4f} > champion {prev_score:.4f} "
-            f"on the same test set ({len(y_test)} current rows)."
-        )
-        is_best = True
-    else:
-        decision = "rejected"
-        reason = (
-            f"New {PRIMARY_METRIC}={new_score:.4f} <= champion {prev_score:.4f} "
-            f"on the same test set ({len(y_test)} current rows)."
-        )
-        is_best = False
+    decision, reason, is_best = decide_promotion(
+        prev_version, new_score, paired, gate, no_pair_reason,
+    )
 
     client.set_model_version_tag(model_name, 
                                  new_version, 
@@ -246,6 +430,14 @@ def _compare_and_promote(
                                  "true" if is_best else "false")
     client.set_model_version_tag(model_name, new_version, PRIMARY_METRIC, str(new_score))
     client.set_model_version_tag(model_name, new_version, "comparison_basis", basis)
+    client.set_model_version_tag(
+        model_name, new_version, "promotion_min_gain", str(gate["min_gain"])
+    )
+    if paired is not None:
+        for key in ("gain", "ci_low", "ci_high"):
+            client.set_model_version_tag(
+                model_name, new_version, f"promotion_{key}", f"{paired[key]:.6f}"
+            )
 
     # Promotion moves the @champion alias; the API serves whatever @champion points to.
     alias = CHAMPION_ALIAS if is_best else CHALLENGER_ALIAS
@@ -259,14 +451,18 @@ def _compare_and_promote(
         "new_version": new_version,
         "new_score": new_score,
         "previous_version": prev_version,
-        # Champion re-scored on this batch's test rows - the number that decided.
-        "previous_score": prev_score,
+        # Champion's weighted F1 on the paired unseen rows - the number that decided.
+        "previous_score": paired["champion_f1"] if paired else None,
         # Champion's own number from its own training run, for reference only.
         "previous_score_logged": prev_logged_score,
         "comparison_basis": basis,
-        "evaluated_on_rows": int(len(y_test)),
+        "evaluated_on_rows": paired["n_rows"] if paired else n_unseen,
         "metric": PRIMARY_METRIC,
         "alias": alias,
+        "gain": paired["gain"] if paired else None,
+        "gain_ci_low": paired["ci_low"] if paired else None,
+        "gain_ci_high": paired["ci_high"] if paired else None,
+        "min_gain": gate["min_gain"],
     }
 
 
@@ -335,6 +531,9 @@ def train(
     In continuous mode, returns {"status": "no_new_data", ...} instead of raising
     once the cursor has reached the end of the data, so the DAG can skip cleanly."""
     ensure_dirs()
+    # Read the promotion settings first, so an invalid PROMOTION_* value fails the
+    # request before any training or registration happens.
+    _promotion_settings()
     _setup_mlflow()
 
     test_size = test_size if test_size is not None else settings.test_size
@@ -369,7 +568,8 @@ def train(
         pipeline = build_pipeline(feature_names, random_state)
         pipeline.fit(X_train, y_train)
 
-        metrics = evaluate(pipeline, X_test, y_test)
+        y_pred = pipeline.predict(X_test)
+        metrics = evaluate(pipeline, X_test, y_test, y_pred)
         version = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
 
         mlflow.log_params({
@@ -381,6 +581,9 @@ def train(
             "n_test": len(X_test),
             "n_features": len(feature_names),
             "classifier": "LogisticRegression",
+            # Highest raw_samples id this model trained on: the promotion gate only
+            # compares a later challenger with it on rows above this id.
+            "window_max_id": int(df["_id"].max()),
         })
         mlflow.set_tags({
             "target_column": settings.target_column,
@@ -415,7 +618,8 @@ def train(
 
     client = MlflowClient()
     comparison = _compare_and_promote(
-        client, settings.mlflow_registered_model_name, new_model_version, metrics, X_test, y_test,
+        client, settings.mlflow_registered_model_name, new_model_version, metrics,
+        X_test, y_test, y_pred, df.loc[X_test.index, "_id"].to_numpy(),
     )
     new_model_version = str(new_model_version)
 
