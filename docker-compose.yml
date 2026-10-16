@@ -188,7 +188,7 @@ services:
       PROMETHEUS_URL: http://localhost:9090
       AIRFLOW_URL: http://localhost:8081
       API_DOCS_URL: http://localhost:8000/docs
-      DAGSHUB_URL: http://dagshub.com/<user>/<repo>
+      DAGSHUB_URL: ${DAGSHUB_URL:-https://dagshub.com/grover.sandeep/jul26_bmlops_int_rakuten}
       RAW_DIR: /data/raw
       API_IMAGE_ROOT: /app/src/data/raw
     volumes:

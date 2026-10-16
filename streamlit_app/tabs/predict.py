@@ -1,5 +1,6 @@
 import json
 import random
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -11,6 +12,7 @@ from config import (
     FLAG_THRESHOLD,
     PRDTYPECODE_LABELS,
     RAW_DIR,
+    SPLITS,
     Y_TRAIN_FILE,
 )
 
@@ -93,6 +95,11 @@ def show_model_info(info: dict):
         stlt.json(other)
 
 
+def available_splits() -> list[str]:
+    """Only the splits whose X_<split>_update.csv is actually present in RAW_DIR."""
+    return [s for s in SPLITS if (RAW_DIR / f"X_{s}_update.csv").is_file()]
+
+
 @stlt.cache_data
 def load_split(split: str) -> pd.DataFrame:
     x = pd.read_csv(RAW_DIR / f"X_{split}_update.csv", index_col=0)
@@ -104,16 +111,48 @@ def load_split(split: str) -> pd.DataFrame:
     return x
 
 
+def image_location(split: str, imageid: int, productid: int):
+    """Return (local_path, api_path) for a product photo, or (None, None) if absent.
+
+    The Rakuten archive unpacks into a nested folder (image_train/image_train/<file>);
+    a flat layout (image_train/<file>) is also accepted. The API path mirrors the
+    folder where the file was actually found, because the API silently falls back to
+    a text-only prediction when it cannot open image_path.
+    """
+    fname = f"image_{imageid}_product_{productid}.jpg"
+    nested = Path(f"image_{split}") / f"image_{split}" / fname
+    flat = Path(f"image_{split}") / fname
+    for rel in (nested, flat):
+        if (RAW_DIR / rel).is_file():
+            return RAW_DIR / rel, f"{API_IMAGE_ROOT}/{rel.as_posix()}"
+    return None, None
+
+
 def _random_row(n: int):
     stlt.session_state["row_pos"] = random.randrange(n)
 
 
 def dataset_sample_mode():
-    split = stlt.radio("Split", ["train", "test"], horizontal=True)
+    splits = available_splits()
+    missing = [s for s in SPLITS if s not in splits]
+    if not splits:
+        stlt.error(
+            f"No dataset CSV found in {RAW_DIR} (expected X_train_update.csv). "
+            "Is ./src/data/raw mounted into the streamlit container?"
+        )
+        return
+    split = stlt.radio("Split", splits, horizontal=True)
+    if missing:
+        stlt.caption(
+            "Not available: "
+            + ", ".join(f"'{s}' (X_{s}_update.csv is not in {RAW_DIR})" for s in missing)
+            + ". Only splits present in the data folder are offered."
+        )
+
     try:
         df = load_split(split)
-    except FileNotFoundError as exc:
-        stlt.error(f"Dataset file not found: {exc}. Is ./src/data/raw mounted into the container?")
+    except (FileNotFoundError, pd.errors.ParserError, KeyError) as exc:
+        stlt.error(f"Cannot read the {split} split from {RAW_DIR}: {exc}")
         return
 
     stlt.session_state.setdefault("row_pos", 0)
@@ -126,15 +165,17 @@ def dataset_sample_mode():
 
     row = df.iloc[int(pos)]
     fname = f"image_{int(row['imageid'])}_product_{int(row['productid'])}.jpg"
-    local_img = RAW_DIR / f"image_{split}" / fname
-    api_img = f"{API_IMAGE_ROOT}/image_{split}/{fname}"
+    local_img, api_img = image_location(split, int(row["imageid"]), int(row["productid"]))
 
     left, right = stlt.columns([1, 2])
     with left:
-        if local_img.exists():
+        if local_img is not None:
             stlt.image(str(local_img), use_container_width=True)
         else:
-            stlt.warning(f"Image not found: {fname}")
+            stlt.warning(
+                f"Image not found under {RAW_DIR}/image_{split}/ (nested or flat): {fname}. "
+                "The prediction will be text-only."
+            )
     with right:
         stlt.markdown(f"**{row['designation']}**")
         stlt.caption(row["description"][:500] or "(no description)")
@@ -145,6 +186,10 @@ def dataset_sample_mode():
 
     use_image = stlt.checkbox("Send image_path to the API", value=True,
                             help="Untick to see how the prediction changes without the image.")
+    if use_image and api_img:
+        stlt.caption(f"image_path sent to the API: `{api_img}`")
+    elif use_image:
+        stlt.caption("No image file found: image_path is sent as null (text-only prediction).")
 
     if stlt.button("Predict this product"):
         record = {
