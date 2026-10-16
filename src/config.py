@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -14,6 +15,11 @@ MODELS_DIR = PROJECT_ROOT / "models"
 REPORTS_DIR = PROJECT_ROOT / "reports"
 IMAGE_TRAIN_DIR = RAW_DATA_DIR / "image_train" / "image_train"
 IMAGE_TEST_DIR = RAW_DATA_DIR / "image_test" / "image_test"
+# Writable folder for files derived from the raw data (the raw folder is mounted read-only
+# in Docker). Overridable with the PROCESSED_DATA_DIR environment variable.
+PROCESSED_DATA_DIR = Path(
+    os.environ.get("PROCESSED_DATA_DIR") or PROJECT_ROOT / "data" / "processed"
+)
 
 
 class Settings(BaseSettings):
@@ -87,5 +93,6 @@ def setup_logging() -> None:
 
 
 def ensure_dirs() -> None:
-    for directory in (RAW_DATA_DIR, MODELS_DIR, REPORTS_DIR):
+    """Create the writable output folders. RAW_DATA_DIR is input only (read-only in Docker)."""
+    for directory in (MODELS_DIR, REPORTS_DIR, PROCESSED_DATA_DIR):
         directory.mkdir(parents=True, exist_ok=True)

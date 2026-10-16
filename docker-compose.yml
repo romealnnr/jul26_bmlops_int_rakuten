@@ -19,6 +19,36 @@ services:
       timeout: 5s
       retries: 10
 
+  # One-shot, runs as root before the api and ingest. Both run as uid 1000
+  # (appuser), but Docker creates missing bind-mount folders as root, so on a
+  # fresh clone the first training failed with "Permission denied" on
+  # mlruns/models/reports. This gives those folders, data/processed (the merged
+  # ingestion copy) and the torch cache volume to uid 1000, then checks that
+  # uid 1000 can really write to them.
+  init-perms:
+    # Same image family as db (only sh, chown and su-exec are used); pinned so the
+    # one-shot is reproducible.
+    image: postgres:16.15-alpine
+    user: "0:0"
+    environment:
+      APP_UID: "1000"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        for d in models reports mlruns processed torch-cache; do
+          chown -R "$$APP_UID:$$APP_UID" "/fix/$$d"
+          su-exec "$$APP_UID:$$APP_UID" test -w "/fix/$$d" \
+            || { echo "init-perms: uid $$APP_UID cannot write $$d"; exit 1; }
+        done
+        echo "init-perms: ok (uid $$APP_UID)"
+    volumes:
+      - ./models:/fix/models
+      - ./reports:/fix/reports
+      - ./mlruns:/fix/mlruns
+      - ./data/processed:/fix/processed
+      - torch-cache:/fix/torch-cache
+
   api:
     build: 
       context: .
@@ -34,6 +64,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      init-perms:
+        condition: service_completed_successfully
     ports:
       - "8000:8000"
     volumes:
@@ -52,12 +84,16 @@ services:
     env_file: .env
     volumes:
       - ./src/data/raw:/app/src/data/raw:ro
+      # Writable copy of the merged source data (src/config.py PROCESSED_DATA_DIR).
+      - ./data/processed:/app/data/processed
     environment:
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
     depends_on:
       db:
         condition: service_healthy
+      init-perms:
+        condition: service_completed_successfully
     command: ["python", "-m", "src.data.make_dataset"]
 
 
@@ -76,10 +112,10 @@ services:
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     user: "${AIRFLOW_UID}:0"
-    command:
-      - db
-      - migrate
+    # Creates the airflow database if it is missing, then runs `airflow db migrate`.
+    command: ["bash", "/opt/airflow/scripts/airflow_init.sh"]
     volumes:
+      - ./scripts/airflow_init.sh:/opt/airflow/scripts/airflow_init.sh:ro
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins

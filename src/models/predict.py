@@ -18,6 +18,7 @@ from typing import Any
 import mlflow
 import mlflow.sklearn
 import pandas as pd
+from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
 
 from src.config import settings, setup_logging
@@ -48,8 +49,17 @@ def load_artifact(force_reload: bool = False) -> dict[str, Any]:
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
     client = MlflowClient()
 
-    versions = client.get_latest_versions(settings.mlflow_registered_model_name,
-                                          stages=["Production"])
+    try:
+        versions = client.get_latest_versions(
+            settings.mlflow_registered_model_name, stages=["Production"]
+        )
+    except MlflowException as exc:
+        # Fresh deployment: the registered model is only created by the first
+        # training run. MLflow reports that as RESOURCE_DOES_NOT_EXIST; it is the
+        # same situation as "no Production version", not a server error.
+        if exc.error_code != "RESOURCE_DOES_NOT_EXIST":
+            raise
+        versions = []
     if not versions:
         raise ModelNotFoundError(
             f"Aucun modèle en Production pour '{settings.mlflow_registered_model_name}'. "

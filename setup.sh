@@ -5,8 +5,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 if [ ! -f .env ]; then
-  cp .env.example .env
-  echo "[setup] .env créé depuis .env.example"
+  cp .env_example .env
+  echo "[setup] .env créé depuis .env_example (remplacer les valeurs \"......\" avant docker compose up)"
 fi
 
 mkdir -p models reports src/data/raw

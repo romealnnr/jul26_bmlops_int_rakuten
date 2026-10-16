@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 
 import pandas as pd
 from sqlalchemy import insert
 
-from src.config import IMAGE_TRAIN_DIR, RAW_DATA_DIR, ensure_dirs, setup_logging
+from src.config import IMAGE_TRAIN_DIR, PROCESSED_DATA_DIR, RAW_DATA_DIR, setup_logging
 from src.data.db import RawSample, count_raw_samples, drop_db, get_session, init_db, ping
 
 logger = logging.getLogger(__name__)
@@ -35,12 +36,22 @@ def load_source_dataframe() -> pd.DataFrame:
     return df
 
 
-def save_raw_copy(df: pd.DataFrame) -> None:
-    """Conserve une copie brute fusionnée sur disque (traçabilité)."""
-    ensure_dirs()
-    path = RAW_DATA_DIR / "rakuten_merged.csv"
-    df.to_csv(path, index=False)
-    logger.info("Copie brute écrite : %s", path)
+def save_raw_copy(df: pd.DataFrame) -> Path | None:
+    """Keep a merged copy of the source data on disk, for traceability.
+
+    The copy goes to PROCESSED_DATA_DIR, never to RAW_DATA_DIR: the raw folder is
+    mounted read-only in Docker. The copy is optional, so a write failure only logs a
+    warning and ingestion into PostgreSQL continues.
+    """
+    path = PROCESSED_DATA_DIR / "rakuten_merged.csv"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(path, index=False)
+    except OSError as exc:
+        logger.warning("Merged copy not written to %s (%s); ingestion continues", path, exc)
+        return None
+    logger.info("Merged copy written: %s", path)
+    return path
 
 
 def resolve_image_path(imageid, productid) -> str | None:
