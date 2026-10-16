@@ -21,10 +21,10 @@
 # lost its model, which is the point: a fault that only affects a quarter of
 # the traffic is still a fault, and an average would bury it.
 #
-# No contact points are defined. These rules surface in Grafana's alert
-# list and on the dashboards; wiring them to email or a webhook is a
-# separate decision, and one that should be made deliberately - an alert
-# that triggers an action is no longer just an observation.
+# Notifications: the policy tree in policies.yml sends every rule here to
+# the contact point "rakuten-team" (contactpoints.yml: email + webhook,
+# addresses from environment variables). Only the drift rule additionally
+# goes to the retrain webhook.
 
 apiVersion: 1
 
@@ -120,17 +120,27 @@ groups:
       # monitoring system can be in, because it is indistinguishable from
       # good news.
       #
-      # A never-run monitor reports -1, not a large age, so a fresh install
-      # does not fire this on its first day.
+      # Why 72 h (259200 s): the DAG (dags/rakuten_continuous_training.py)
+      # runs every 2 days (48 h, 172800 s) and computes drift at the end of
+      # each run, after training (up to 1800 s) and the drift job (up to
+      # 600 s). 72 h is one cycle plus 24 h of margin: a run that starts late
+      # or is retried does not fire the alert, and one missed run does. With
+      # 1 day, as before, this alert fired for about half of every normal
+      # cycle. Change it together with the DAG schedule.
+      #
+      # outside_range [-1.5, 259200] fires when the age is above 72 h OR
+      # equals -2 (the drift table cannot be read). It stays quiet at -1 (no
+      # report has ever been produced), so a fresh install does not fire.
       - uid: rakuten-drift-monitor-stale
         title: Drift monitor has stopped reporting
         condition: C
         for: 15m
         annotations:
           summary: >-
-            No drift report has been produced for over 24 hours. The drift
-            dashboard is showing stale data while appearing normal. Check the
-            Airflow DAG and the /drift/compute endpoint.
+            No drift report for more than 3 days (the DAG runs every 2 days),
+            or the drift table cannot be read. The drift dashboard is showing
+            stale data while appearing normal. Check the Airflow DAG
+            rakuten_continuous_training and the /drift/compute endpoint.
         labels:
           severity: critical
         noDataState: NoData
@@ -157,28 +167,34 @@ groups:
               type: threshold
               expression: B
               conditions:
-                - evaluator: {type: gt, params: [86400]}
+                - evaluator: {type: outside_range, params: [-1.5, 259200]}
 
       # ------------------------------------------------------------------
       - uid: rakuten-training-failures
         title: Training runs are failing
         condition: C
-        for: 5m
+        for: 1m
         annotations:
           summary: >-
-            At least one training run has failed in the last hour. The model
-            in production is not being refreshed; check the API logs.
+            The most recent training run failed, and no run has succeeded
+            since. The model in production is not being refreshed; check the
+            API logs and the Airflow task logs.
         labels:
           severity: warning
         noDataState: OK
         execErrState: Error
+        # rakuten_last_training_failed is 1 from a failed run until the next
+        # successful one. The previous rule counted failures over the last
+        # hour only, so with a 2-day schedule a failure was visible for about
+        # an hour and then resolved by itself. A down API already shows as
+        # NoData on rakuten-model-not-loaded, hence noDataState OK here.
         data:
           - refId: A
-            relativeTimeRange: {from: 3600, to: 0}
+            relativeTimeRange: {from: 600, to: 0}
             datasourceUid: prometheus_ds
             model:
               refId: A
-              expr: sum(increase(rakuten_training_runs_total{outcome="failed"}[1h]))
+              expr: max(rakuten_last_training_failed)
               instant: true
           - refId: B
             datasourceUid: __expr__
@@ -195,3 +211,127 @@ groups:
               expression: B
               conditions:
                 - evaluator: {type: gt, params: [0]}
+
+  # ----------------------------------------------------------------------
+  # Infrastructure: the components around the model. Before, only the API was
+  # scraped, so a dead scheduler or database was invisible here.
+  - orgId: 1
+    name: rakuten-infra
+    folder: Rakuten
+    interval: 1m
+    rules:
+
+      # One alert instance per scrape job (api, prometheus, grafana, postgres,
+      # airflow): `up` is 0 when Prometheus cannot scrape the target.
+      - uid: rakuten-target-down
+        title: Monitoring target down
+        condition: C
+        for: 2m
+        annotations:
+          summary: >-
+            Prometheus cannot scrape job {{ $labels.job }} ({{ $labels.instance }}).
+            The service is down or unreachable.
+        labels:
+          severity: critical
+        noDataState: Alerting
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus_ds
+            model:
+              refId: A
+              expr: up
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              reducer: last
+              expression: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: lt, params: [1]}
+
+      # postgres-exporter keeps answering (up=1) when the database is down;
+      # pg_up is the exporter's own view of the database.
+      - uid: rakuten-postgres-down
+        title: PostgreSQL unreachable
+        condition: C
+        for: 2m
+        annotations:
+          summary: >-
+            postgres-exporter cannot connect to PostgreSQL. The API, MLflow and
+            Airflow all depend on it.
+        labels:
+          severity: critical
+        noDataState: Alerting
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus_ds
+            model:
+              refId: A
+              expr: min(pg_up)
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              reducer: last
+              expression: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: lt, params: [1]}
+
+      # statsd-exporter stays up when Airflow is dead, so "up" cannot see a
+      # stopped scheduler. The scheduler sends a heartbeat every few seconds;
+      # no heartbeat for 10 minutes (or never) means the DAG will not run.
+      - uid: rakuten-airflow-scheduler-silent
+        title: Airflow scheduler not heartbeating
+        condition: C
+        for: 10m
+        annotations:
+          summary: >-
+            No Airflow scheduler heartbeat in the last 5 minutes. The DAG
+            rakuten_continuous_training (training + drift) will not run.
+        labels:
+          severity: critical
+        noDataState: Alerting
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prometheus_ds
+            model:
+              refId: A
+              expr: sum(rate(airflow_scheduler_heartbeat[5m]))
+              instant: true
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              reducer: last
+              expression: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: lt, params: [0.001]}

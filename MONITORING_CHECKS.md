@@ -82,6 +82,7 @@ Expected: all ten metric families present.
 | `rakuten_predictions_flagged_total` | counter | low-confidence predictions |
 | `rakuten_prediction_confidence` | histogram | |
 | `rakuten_training_runs_total` | counter | label `outcome` = succeeded / failed |
+| `rakuten_last_training_failed` | gauge | 1 after a failed run until the next success; the training-failure alert reads this |
 | `rakuten_training_duration_seconds` | histogram | |
 | `rakuten_training_in_progress` | gauge | the webhook lock reads this |
 | `rakuten_drift_share_of_drifted_columns` | gauge | read from the DB at scrape time |
@@ -259,6 +260,8 @@ curl -s http://127.0.0.1:8000/metrics | findstr /c:"rakuten_training_runs_total"
 ```
 
 Expected: `outcome="succeeded"` incremented by one and `outcome="failed"` unchanged.
+`rakuten_last_training_failed` (same command, that name) reads `0.0` after a successful
+run and `1.0` after a failed one, until the next run succeeds.
 
 **Note on the endpoint:** the webhook posts to `/training/trigger`, not to `/training`.
 That separation is not cosmetic. `/training` takes a request body, and Grafana's

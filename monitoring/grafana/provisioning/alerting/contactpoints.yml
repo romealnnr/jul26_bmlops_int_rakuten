@@ -14,6 +14,22 @@
 # `disableResolveMessage: true` because a resolved alert means the drift
 # dropped back under the threshold. That is good news, and good news should
 # not start a training run.
+#
+# "rakuten-team" is where people hear about alerts. Before it existed the
+# root of the policy tree (policies.yml) was grafana-default-email, whose
+# address is Grafana's placeholder, so every alert reached nobody. It has two
+# integrations, both read from the grafana container's environment so no
+# address or URL is written here:
+#
+#   * email   to $ALERT_EMAIL_TO. Grafana only sends mail when SMTP is set up
+#             (GF_SMTP_ENABLED, GF_SMTP_HOST, GF_SMTP_USER, GF_SMTP_PASSWORD,
+#             GF_SMTP_FROM_ADDRESS in the grafana service).
+#   * webhook to $ALERT_WEBHOOK_URL, e.g. a Slack/Discord/Teams incoming
+#             webhook or any HTTP endpoint.
+#
+# docker-compose.yml gives both clearly fake defaults (*.invalid). With the
+# defaults the alerts are routed and show up in Grafana's notification
+# history as failed deliveries; set real values in .env to receive them.
 
 apiVersion: 1
 
@@ -26,4 +42,18 @@ contactPoints:
         disableResolveMessage: true
         settings:
           url: http://api:8000/training/trigger
+          httpMethod: POST
+
+  - orgId: 1
+    name: rakuten-team
+    receivers:
+      - uid: rakuten-team-email
+        type: email
+        settings:
+          addresses: $ALERT_EMAIL_TO
+          singleEmail: true
+      - uid: rakuten-team-webhook
+        type: webhook
+        settings:
+          url: $ALERT_WEBHOOK_URL
           httpMethod: POST

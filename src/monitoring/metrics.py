@@ -105,6 +105,15 @@ TRAINING_DURATION = Histogram(
     buckets=(30, 60, 120, 300, 600, 1200, 1800, 3600),
 )
 
+LAST_TRAINING_FAILED = Gauge(
+    "rakuten_last_training_failed",
+    "1 when the most recent training run of this API process failed, 0 after "
+    "a successful run (and at start-up). The training-failure alert reads this "
+    "instead of a one-hour counter window: the DAG runs every 2 days, so a "
+    "failure must stay visible until the next run succeeds, not for one hour. "
+    "Per process: it starts at 0 after a restart.",
+)
+
 TRAINING_IN_PROGRESS = Gauge(
     "rakuten_training_in_progress",
     "1 while a training run is executing, 0 otherwise. Also useful for "
@@ -172,6 +181,17 @@ def observe_predictions(results: list[dict]) -> None:
         PREDICTION_CONFIDENCE.observe(result["probability"])
         if result["flagged"]:
             PREDICTIONS_FLAGGED.inc()
+
+
+def observe_training_outcome(succeeded: bool) -> None:
+    """Record the outcome of one training run.
+
+    Increments rakuten_training_runs_total{outcome} and sets
+    rakuten_last_training_failed, so the counter (history) and the gauge
+    (current state, used by the alert) can never disagree.
+    """
+    TRAINING_RUNS.labels(outcome="succeeded" if succeeded else "failed").inc()
+    LAST_TRAINING_FAILED.set(0 if succeeded else 1)
 
 
 def observe_model(info: dict | None) -> None:
