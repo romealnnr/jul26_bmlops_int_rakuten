@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     # mlflow_tracking_uri: str
     mlflow_experiment_name: str
     mlflow_registered_model_name: str
+
+    # Monitoring
+    drift_min_predictions: int = 200  # minimum real /predict requests required before computing a reliable drift score
     
     @property
     def mlflow_tracking_uri(self) -> str:

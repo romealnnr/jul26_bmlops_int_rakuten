@@ -22,6 +22,50 @@ logger = logging.getLogger(__name__)
 TARGET = settings.target_column
 
 
+def load_dataframe_sample(max_id: int, limit: int) -> pd.DataFrame:
+    """Charge un échantillon aléatoire (pas les `limit` premières lignes, un vrai
+    tirage au sort côté SQL) parmi les lignes id <= max_id — c'est-à-dire parmi
+    les données déjà traitées par un cycle précédent du versioning continu.
+
+    Utilisé pour construire une fenêtre d'entraînement de taille fixe qui mélange
+    le nouveau batch avec un échantillon de l'historique : sans ça, chaque
+    ré-entraînement n'apprend que sur sa propre tranche de 3000 lignes et oublie
+    tout ce qu'un modèle précédent savait des batchs antérieurs (catastrophic
+    forgetting). Retourne au plus `limit` lignes (moins si l'historique est plus
+    petit que `limit`, par exemple lors des tout premiers cycles)."""
+    import numpy as np
+
+    with get_session() as session:
+        ids = session.execute(
+            select(RawSample.id).where(RawSample.id <= max_id)
+        ).scalars().all()
+
+    if not ids:
+        return pd.DataFrame()
+
+    # Seeded draw (settings.random_state + max_id) rather than ORDER BY random():
+    # makes the exact same training window reproducible for a given cursor
+    # position, instead of a different random sample every time the same
+    # cycle is re-run.
+    rng = np.random.default_rng([settings.random_state, max_id])
+    drawn_ids = sorted(rng.choice(ids, size=min(limit, len(ids)), replace=False).tolist())
+
+    with get_session() as session:
+        rows = session.execute(
+            select(RawSample.id, RawSample.features, RawSample.target)
+            .where(RawSample.id.in_(drawn_ids))
+        ).all()
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(
+        [{"_id": row_id, **features, TARGET: target} for row_id, features, target in rows]
+    )
+    logger.info("Échantillon historique chargé : %d lignes (id <= %d)", len(df), max_id)
+    return df
+
+
 def load_dataframe(limit: int | None = None, min_id: int | None = None) -> pd.DataFrame:
     """Charge raw_samples et aplatit le JSONB en colonnes.
 

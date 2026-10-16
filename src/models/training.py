@@ -1,6 +1,8 @@
 """Training and evaluation of the Rakuten baseline model, with MLflow tracking."""
 from __future__ import annotations
 
+import pandas as pd
+
 import argparse
 import hashlib
 import json
@@ -255,6 +257,7 @@ def _compare_and_promote(
 
 CONTINUOUS_PIPELINE_NAME = "rakuten-continuous-training"
 CONTINUOUS_BATCH_SIZE = 3000
+HISTORY_SAMPLE_SIZE = 7200  # random historical rows added to the training window only
 
 
 def _get_cursor(session, pipeline_name: str = CONTINUOUS_PIPELINE_NAME) -> int:
@@ -320,7 +323,26 @@ def train(
     X, y = split_xy(df)
     X_train, X_test, y_train, y_test = split_train_test(X, y, test_size, random_state)
 
-    logger.info("Training on %d line (%d en test)", len(X_train), len(X_test))
+    # Fixed-size training window: mix the new batch (already split above) with a
+    # random sample of historical rows, so each model does not forget everything
+    # learned from earlier batches (catastrophic forgetting). This only augments
+    # the TRAINING rows — X_test/y_test (the current batch's evaluation set) are
+    # left untouched, so the promotion comparison keeps comparing on the same
+    # basis it already used before this change.
+    if continuous and min_id:
+        from src.features.build_features import load_dataframe_sample
+
+        history_df = load_dataframe_sample(max_id=min_id, limit=HISTORY_SAMPLE_SIZE)
+        if not history_df.empty:
+            X_history, y_history = split_xy(history_df)
+            X_train = pd.concat([X_train, X_history], ignore_index=True)
+            y_train = pd.concat([y_train, y_history], ignore_index=True)
+            logger.info(
+                "Training window enriched with %d historical rows (total train = %d)",
+                len(X_history), len(X_train),
+            )
+
+    logger.info("Training on %d rows (%d in test)", len(X_train), len(X_test))
 
     with mlflow.start_run() as run:
         pipeline = build_pipeline(feature_names, random_state)
